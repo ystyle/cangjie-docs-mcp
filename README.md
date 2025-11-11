@@ -2,34 +2,10 @@
 
 这是一个专为Claude Code设计的仓颉语言文档检索MCP服务器，让你能够直接在Claude Code中高效查询仓颉编程语言的所有文档。
 
-## 🚀 快速开始
-
-```bash
-# 1. 克隆项目
-git clone <repository-url>
-cd cangje-docs-mcp
-
-# 2. 下载仓颉文档
-git clone https://gitcode.com/Cangjie/CangjieCorpus.git
-
-# 3. 构建项目
-go build -o cangje-docs-mcp
-
-# 4. 测试运行
-./cangje-docs-mcp -version
-```
-
-> **文档源**: [CangjieCorpus](https://gitcode.com/Cangjie/CangjieCorpus) - 仓颉编程语言官方文档仓库
-
 ## 🚀 Claude Code配置
 
-### 第一步：构建MCP服务器
-
-```bash
-git clone <repository-url>
-cd cangje-docs-mcp
-go build -o cangje-docs-mcp
-```
+### 第一步：下载可mcp可执行文件
+- [下载](https://github.com/ystyle/cangje-docs-mcp/releases)仓颉文件mcp可执行文
 
 ### 第二步：准备文档目录
 
@@ -38,11 +14,6 @@ go build -o cangje-docs-mcp
 ```bash
 # 克隆官方文档仓库
 git clone https://gitcode.com/Cangjie/CangjieCorpus.git
-
-# 或者下载压缩包
-wget https://gitcode.com/Cangjie/CangjieCorpus/archive/main.zip
-unzip main.zip
-mv CangjieCorpus-main CangjieCorpus
 ```
 
 #### 方式二：使用现有文档
