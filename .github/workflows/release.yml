@@ -1,0 +1,87 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.21'
+
+    - name: Check out code
+      uses: actions/checkout@v4
+
+    - name: Get dependencies
+      run: go mod download
+
+    - name: Run tests
+      run: go test -v ./...
+
+    - name: Build binaries
+      run: |
+        # 使用GitHub Actions提供的tag名称作为版本
+        version="${{ github.ref_name }}"
+        echo "Building version: $version"
+
+        # 设置构建标志
+        ldflags="-s -w -X main.version=$version"
+
+        # 创建构建目录
+        mkdir -p build
+
+        # 构建各平台二进制文件
+        GOOS=windows GOARCH=amd64 go build -ldflags "$ldflags" -o build/cangje-docs-mcp-windows.exe main.go
+        GOOS=linux   GOARCH=amd64 go build -ldflags "$ldflags" -o build/cangje-docs-mcp-linux main.go
+        GOOS=darwin  GOARCH=amd64 go build -ldflags "$ldflags" -o build/cangje-docs-mcp-macos main.go
+        GOOS=darwin  GOARCH=arm64 go build -ldflags "$ldflags" -o build/cangje-docs-mcp-macos-arm64 main.go
+
+    - name: Create release archives
+      run: |
+        # 使用GitHub Actions提供的tag名称作为版本
+        version="${{ github.ref_name }}"
+        echo "Creating archives for version: $version"
+
+        # 创建压缩包
+        cd build
+
+        # Windows
+        zip cangje-docs-mcp-${version}_windows-amd64.zip cangje-docs-mcp-windows.exe
+
+        # Linux
+        tar -czf cangje-docs-mcp-${version}_linux-amd64.tar.gz cangje-docs-mcp-linux
+
+        # macOS Intel
+        tar -czf cangje-docs-mcp-${version}_darwin-amd64.tar.gz cangje-docs-mcp-macos
+
+        # macOS Apple Silicon
+        tar -czf cangje-docs-mcp-${version}_darwin-arm64.tar.gz cangje-docs-mcp-macos-arm64
+
+        # 移动文件到根目录
+        mv cangje-docs-mcp-*.zip ..
+        mv cangje-docs-mcp-*.tar.gz ..
+
+        ls -R ..
+
+    - name: Upload release assets
+      uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          cangje-docs-mcp-${{ github.ref_name }}_windows-amd64.zip
+          cangje-docs-mcp-${{ github.ref_name }}_linux-amd64.tar.gz
+          cangje-docs-mcp-${{ github.ref_name }}_darwin-amd64.tar.gz
+          cangje-docs-mcp-${{ github.ref_name }}_darwin-arm64.tar.gz
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
