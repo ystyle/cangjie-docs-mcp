@@ -46,7 +46,7 @@ git clone https://gitcode.com/Cangjie/CangjieCorpus.git
 
 重启Claude Code以加载新的MCP服务器。
 
-> 在`CLAUDE.md` 添加 本仓库里的 `cj_syntax.md`
+> 在`CLAUDE.md` 添加 本仓库里的 `cj_syntax.md`, 相当于在上下文赏驻一份仓颉基础语法（如果针对仓颉微调过的llm就可以不需要这个）
 
 
 ## 💡 在Claude Code中使用
