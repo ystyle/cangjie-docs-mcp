@@ -12,12 +12,13 @@ import (
 	"strings"
 
 	"cangje-docs-mcp/pkg/mcp"
-	"cangje-docs-mcp/pkg/types"
+	"cangje-docs-mcp/pkg/utils"
 )
 
 func main() {
 	// 定义命令行参数
-	var docRoot = flag.String("dir", "", "仓颉文档根目录路径 (默认: "+types.DefaultDocumentRootPath+")")
+	var docRoot = flag.String("dir", "", "仓颉文档根目录路径 (留空则使用默认位置)")
+	var noUpdate = flag.Bool("no-update", false, "禁用自动更新文档")
 	var showVersion = flag.Bool("version", false, "显示版本信息")
 	var showHelp = flag.Bool("help", false, "显示帮助信息")
 
@@ -27,9 +28,14 @@ func main() {
 	if *showVersion {
 		fmt.Println("仓颉语言文档检索系统 v1.0.0")
 		fmt.Println("基于MCP协议的本地文档检索服务器")
+		fmt.Println()
+
+		// 获取文档目录
+		docDir, _ := utils.GetDocumentDir(*docRoot)
+		fmt.Printf("文档目录: %s\n", docDir)
 
 		// 尝试读取文档版本信息
-		if docVersion := getDocumentVersion(*docRoot); docVersion != "" {
+		if docVersion := getDocumentVersion(docDir); docVersion != "" {
 			fmt.Printf("文档版本: %s\n", docVersion)
 		}
 		return
@@ -45,21 +51,35 @@ func main() {
 		fmt.Println("选项:")
 		flag.PrintDefaults()
 		fmt.Println()
+		fmt.Println("说明:")
+		fmt.Println("  如果不指定 -dir 参数，系统将自动下载仓颉文档到默认位置：")
+		fmt.Println("    - Windows: 可执行文件同目录下的 CangjieCorpus")
+		fmt.Println("    - 其他系统: ~/.config/cangje-docs-mcp/CangjieCorpus")
+		fmt.Println()
+		fmt.Println("  启动时会自动更新文档（除非使用 -no-update 参数）")
+		fmt.Println()
 		fmt.Println("示例:")
-		fmt.Println("  cangje-docs-mcp                                    # 使用默认文档目录")
+		fmt.Println("  cangje-docs-mcp                                    # 使用默认目录并自动更新")
+		fmt.Println("  cangje-docs-mcp -no-update                         # 使用默认目录但不更新")
 		fmt.Println("  cangje-docs-mcp -dir /path/to/docs                # 指定文档目录")
-		fmt.Println("  cangje-docs-mcp -dir ./docs                       # 使用相对路径")
 		return
 	}
 
-	// 使用默认目录如果未指定
-	if *docRoot == "" {
-		*docRoot = types.DefaultDocumentRootPath
+	// 获取文档目录
+	docDir, err := utils.GetDocumentDir(*docRoot)
+	if err != nil {
+		log.Fatalf("获取文档目录失败: %v", err)
+	}
+
+	// 确保文档存在并更新
+	autoUpdate := !*noUpdate
+	if err := utils.EnsureDocuments(docDir, autoUpdate); err != nil {
+		log.Fatalf("初始化文档失败: %v", err)
 	}
 
 	ctx := context.Background()
 
-	server := mcp.NewCangJieDocServer(*docRoot)
+	server := mcp.NewCangJieDocServer(docDir)
 
 	if err := server.Serve(ctx); err != nil {
 		log.Printf("服务器错误: %v", err)
