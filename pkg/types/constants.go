@@ -30,6 +30,16 @@ const (
 	DefaultMaxSuggestions = 5
 )
 
+// 文档分割配置
+const (
+	// 大文档阈值（字符数），超过此大小会进行分割
+	LargeDocumentThreshold = 15000
+	// 单个章节的最大字符数，超过此大小会进一步分割
+	MaxSectionSize = 10000
+	// 是否启用文档分割
+	EnableDocumentSplitting = true
+)
+
 // 分类映射
 var CategoryNames = map[DocumentCategory]string{
 	CategoryManual: "基础手册",

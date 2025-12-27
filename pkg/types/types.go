@@ -104,3 +104,23 @@ type DocumentMap struct {
 	Categories map[DocumentCategory]CategoryInfo `json:"categories"`
 	TotalDocs  int                               `json:"total_docs"`
 }
+
+// DocumentSection 文档章节
+type DocumentSection struct {
+	ID          string `json:"id"`          // 章节ID
+	ParentID    string `json:"parent_id"`   // 父文档ID
+	Title       string `json:"title"`       // 章节标题
+	Level       int    `json:"level"`       // 标题级别 (1-6)
+	Content     string `json:"content"`     // 章节内容
+	CharCount   int    `json:"char_count"`  // 字符数
+	LineNumber  int    `json:"line_number"` // 起始行号
+}
+
+// DocumentTOC 文档目录
+type DocumentTOC struct {
+	DocID     string             `json:"doc_id"`     // 文档ID
+	Title     string             `json:"title"`      // 文档标题
+	Sections  []DocumentSection  `json:"sections"`   // 章节列表
+	TotalSize int                `json:"total_size"` // 总字符数
+	IsSplit   bool               `json:"is_split"`   // 是否已分割
+}

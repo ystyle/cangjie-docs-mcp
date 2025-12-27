@@ -66,7 +66,14 @@ func (s *Scanner) scanDirectory(relativePath string, documents map[string]*types
 			return nil
 		}
 
-		documents[doc.ID] = doc
+		// 检查是否需要分割大文档
+		splitDocs := s.splitDocumentIfNeeded(doc)
+
+		// 添加分割后的文档到索引
+		for _, splitDoc := range splitDocs {
+			documents[splitDoc.ID] = splitDoc
+		}
+
 		return nil
 	})
 }
@@ -305,4 +312,289 @@ func contains(slice []string, item string) bool {
 		}
 	}
 	return false
+}
+
+// splitDocumentIfNeeded 检查文档是否需要分割，如果需要则返回分割后的文档列表
+func (s *Scanner) splitDocumentIfNeeded(doc *types.Document) []*types.Document {
+	// 如果文档分割未启用或文档小于阈值，直接返回原文档
+	if !types.EnableDocumentSplitting || len(doc.Content) < types.LargeDocumentThreshold {
+		return []*types.Document{doc}
+	}
+
+	// 解析文档的TOC
+	toc := s.parseDocumentTOC(doc.Content, doc.ID)
+
+	// 如果只有少数几个章节，且每个章节都不太大，不需要分割
+	if len(toc.Sections) <= 5 {
+		maxSectionSize := 0
+		for _, section := range toc.Sections {
+			if section.CharCount > maxSectionSize {
+				maxSectionSize = section.CharCount
+			}
+		}
+		if maxSectionSize < types.MaxSectionSize {
+			return []*types.Document{doc}
+		}
+	}
+
+	// 需要分割：为每个主要章节创建独立的文档
+	var splitDocs []*types.Document
+
+	for i, section := range toc.Sections {
+		// 只处理二级标题(##)及以下的章节
+		if section.Level > 2 {
+			continue
+		}
+
+		// 如果章节内容仍然太大，递归分割
+		if section.CharCount > types.MaxSectionSize {
+			subSections := s.splitLargeSection(doc, section, toc, i)
+			splitDocs = append(splitDocs, subSections...)
+		} else {
+			// 创建章节文档
+			sectionDoc := s.createSectionDocument(doc, section, i)
+			splitDocs = append(splitDocs, sectionDoc)
+		}
+	}
+
+	// 如果分割失败或没有产生任何文档，返回原文档
+	if len(splitDocs) == 0 {
+		return []*types.Document{doc}
+	}
+
+	return splitDocs
+}
+
+// parseDocumentTOC 解析文档目录结构
+func (s *Scanner) parseDocumentTOC(content, docID string) *types.DocumentTOC {
+	lines := strings.Split(content, "\n")
+	toc := &types.DocumentTOC{
+		DocID:    docID,
+		Sections: []types.DocumentSection{},
+	}
+
+	var currentSection *types.DocumentSection
+	var sectionContent strings.Builder
+
+	for i, line := range lines {
+		// 检查是否是标题行
+		if strings.HasPrefix(line, "#") {
+			// 保存上一个章节
+			if currentSection != nil {
+				currentSection.Content = sectionContent.String()
+				currentSection.CharCount = len(currentSection.Content)
+				toc.Sections = append(toc.Sections, *currentSection)
+				toc.TotalSize += currentSection.CharCount
+			}
+
+			// 解析新章节
+			level := 0
+			for _, ch := range line {
+				if ch == '#' {
+					level++
+				} else {
+					break
+				}
+			}
+
+			title := strings.TrimSpace(line[level:])
+			sectionID := fmt.Sprintf("%s_section_%d", docID, len(toc.Sections)+1)
+
+			currentSection = &types.DocumentSection{
+				ID:         sectionID,
+				Title:      title,
+				Level:      level,
+				LineNumber: i + 1,
+			}
+
+			sectionContent = strings.Builder{}
+		} else if currentSection != nil {
+			// 添加内容到当前章节
+			if sectionContent.Len() > 0 {
+				sectionContent.WriteString("\n")
+			}
+			sectionContent.WriteString(line)
+		}
+	}
+
+	// 保存最后一个章节
+	if currentSection != nil {
+		currentSection.Content = sectionContent.String()
+		currentSection.CharCount = len(currentSection.Content)
+		toc.Sections = append(toc.Sections, *currentSection)
+		toc.TotalSize += currentSection.CharCount
+	}
+
+	// 提取文档标题（第一个一级标题）
+	if len(toc.Sections) > 0 && toc.Sections[0].Level == 1 {
+		toc.Title = toc.Sections[0].Title
+	}
+
+	toc.IsSplit = toc.TotalSize >= types.LargeDocumentThreshold
+
+	return toc
+}
+
+// splitLargeSection 递归分割过大的章节
+func (s *Scanner) splitLargeSection(doc *types.Document, section types.DocumentSection, toc *types.DocumentTOC, sectionIndex int) []*types.Document {
+	// 在原始内容中查找该章节下的子章节
+	lines := strings.Split(section.Content, "\n")
+	var subDocs []*types.Document
+
+	var currentSubSection *types.DocumentSection
+	var subContent strings.Builder
+	subSectionIndex := 0
+
+	for _, line := range lines {
+		// 查找三级标题(###)及以下的子章节
+		if strings.HasPrefix(line, "###") {
+			// 保存上一个子章节
+			if currentSubSection != nil && subContent.Len() > 0 {
+				currentSubSection.Content = subContent.String()
+				currentSubSection.CharCount = len(currentSubSection.Content)
+
+				// 如果子章节仍然太大，跳过它（避免无限递归）
+				if currentSubSection.CharCount < types.MaxSectionSize*2 {
+					subDoc := s.createSubSectionDocument(doc, section, *currentSubSection, sectionIndex, subSectionIndex)
+					subDocs = append(subDocs, subDoc)
+					subSectionIndex++
+				}
+			}
+
+			// 创建新的子章节
+			level := 0
+			for _, ch := range line {
+				if ch == '#' {
+					level++
+				} else {
+					break
+				}
+			}
+
+			title := strings.TrimSpace(line[level:])
+			subSectionID := fmt.Sprintf("%s_sub_%d_%d", doc.ID, sectionIndex, subSectionIndex)
+
+			currentSubSection = &types.DocumentSection{
+				ID:    subSectionID,
+				Title: title,
+				Level: level,
+			}
+
+			subContent = strings.Builder{}
+		} else if currentSubSection != nil {
+			if subContent.Len() > 0 {
+				subContent.WriteString("\n")
+			}
+			subContent.WriteString(line)
+		}
+	}
+
+	// 保存最后一个子章节
+	if currentSubSection != nil && subContent.Len() > 0 {
+		currentSubSection.Content = subContent.String()
+		currentSubSection.CharCount = len(currentSubSection.Content)
+
+		if currentSubSection.CharCount < types.MaxSectionSize*2 {
+			subDoc := s.createSubSectionDocument(doc, section, *currentSubSection, sectionIndex, subSectionIndex)
+			subDocs = append(subDocs, subDoc)
+		}
+	}
+
+	// 如果没有找到合适的子章节，返回包含整个章节的单个文档
+	if len(subDocs) == 0 {
+		return []*types.Document{s.createSectionDocument(doc, section, sectionIndex)}
+	}
+
+	return subDocs
+}
+
+// createSectionDocument 创建章节文档
+func (s *Scanner) createSectionDocument(doc *types.Document, section types.DocumentSection, index int) *types.Document {
+	sectionID := fmt.Sprintf("%s_%s_%d", doc.ID, sanitizeID(section.Title), index)
+
+	return &types.Document{
+		ID:           sectionID,
+		Title:        section.Title,
+		Category:     doc.Category,
+		Subcategory:  doc.Subcategory,
+		Description:  s.generateSectionDescription(section.Content),
+		FilePath:     doc.FilePath,
+		RelativePath: doc.RelativePath,
+		Keywords:     s.extractKeywords(section.Content),
+		Prerequisites: []string{doc.ID}, // 父文档ID
+		RelatedDocs:   []string{},
+		Difficulty:    doc.Difficulty,
+		FileSize:      int64(len(section.Content)),
+		LastModified:  doc.LastModified,
+		Content:       section.Content,
+		ContentPreview: s.generateContentPreview(section.Content),
+	}
+}
+
+// createSubSectionDocument 创建子章节文档
+func (s *Scanner) createSubSectionDocument(doc *types.Document, parentSection types.DocumentSection, subSection types.DocumentSection, parentIndex, subIndex int) *types.Document {
+	subSectionID := fmt.Sprintf("%s_%s_%d_%d", doc.ID, sanitizeID(parentSection.Title), parentIndex, subIndex)
+
+	// 合并父章节标题和子章节标题作为标题
+	title := fmt.Sprintf("%s - %s", parentSection.Title, subSection.Title)
+
+	return &types.Document{
+		ID:           subSectionID,
+		Title:        title,
+		Category:     doc.Category,
+		Subcategory:  doc.Subcategory,
+		Description:  s.generateSectionDescription(subSection.Content),
+		FilePath:     doc.FilePath,
+		RelativePath: doc.RelativePath,
+		Keywords:     s.extractKeywords(subSection.Content),
+		Prerequisites: []string{doc.ID},
+		RelatedDocs:   []string{},
+		Difficulty:    doc.Difficulty,
+		FileSize:      int64(len(subSection.Content)),
+		LastModified:  doc.LastModified,
+		Content:       subSection.Content,
+		ContentPreview: s.generateContentPreview(subSection.Content),
+	}
+}
+
+// generateSectionDescription 为章节生成描述
+func (s *Scanner) generateSectionDescription(content string) string {
+	lines := strings.Split(content, "\n")
+	var descLines []string
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		// 跳过空行、标题和代码块
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "```") {
+			continue
+		}
+		// 跳过代码行
+		if strings.HasPrefix(line, "    ") || strings.HasPrefix(line, "\t") {
+			continue
+		}
+
+		descLines = append(descLines, line)
+		if len(descLines) >= 2 {
+			break
+		}
+	}
+
+	desc := strings.Join(descLines, " ")
+	if len(desc) > 150 {
+		desc = desc[:150] + "..."
+	}
+
+	return desc
+}
+
+// sanitizeID 清理ID中的特殊字符
+func sanitizeID(title string) string {
+	// 移除特殊字符，只保留字母、数字、下划线和连字符
+	// 使用字符类匹配中文字符
+	reg := regexp.MustCompile(`[^a-zA-Z0-9_\p{Han}-]`)
+	id := reg.ReplaceAllString(title, "_")
+	// 移除连续的下划线
+	reg = regexp.MustCompile(`_+`)
+	id = reg.ReplaceAllString(id, "_")
+	return strings.Trim(id, "_")
 }
