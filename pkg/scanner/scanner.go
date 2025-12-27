@@ -217,11 +217,21 @@ func (s *Scanner) determineCategory(relativePath string) (types.DocumentCategory
 		}
 		return types.CategoryManual, ""
 	case "libs":
+		// 处理 libs/std 和 libs/stdx
+		if len(parts) > 1 {
+			return types.CategoryLibs, parts[1]
+		}
 		return types.CategoryLibs, ""
 	case "tools":
 		return types.CategoryTools, ""
 	case "extra":
 		return types.CategoryExtra, ""
+	case "ohos":
+		// 处理 ohos/zh-cn 等子目录
+		if len(parts) > 1 {
+			return types.CategoryOhos, parts[1]
+		}
+		return types.CategoryOhos, ""
 	default:
 		return types.CategoryManual, ""
 	}

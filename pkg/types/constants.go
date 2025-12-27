@@ -36,14 +36,16 @@ var CategoryNames = map[DocumentCategory]string{
 	CategoryLibs:   "标准库API",
 	CategoryTools:  "开发工具",
 	CategoryExtra:  "额外内容",
+	CategoryOhos:   "OpenHarmony",
 }
 
 // 分类描述
 var CategoryDescriptions = map[DocumentCategory]string{
 	CategoryManual: "仓颉语言基础教程和编程概念",
-	CategoryLibs:   "仓颉标准库API文档",
+	CategoryLibs:   "仓颉标准库API文档（包含 std 和 stdx）",
 	CategoryTools:  "仓颉开发工具文档",
 	CategoryExtra:  "高级主题和最佳实践",
+	CategoryOhos:   "仓颉在OpenHarmony平台的应用和能力",
 }
 
 // 学习路径

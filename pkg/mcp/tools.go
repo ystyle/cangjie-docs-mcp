@@ -24,8 +24,8 @@ func (s *CangJieDocServer) registerTools() {
 		),
 		mcp.WithString("category",
 			mcp.Required(),
-			mcp.Description("指定分类 (manual/libs/tools/extra)"),
-			mcp.Enum("manual", "libs", "tools", "extra"),
+			mcp.Description("指定分类 (manual/libs/tools/extra/ohos)"),
+			mcp.Enum("manual", "libs", "tools", "extra", "ohos"),
 		),
 		mcp.WithNumber("max_items",
 			mcp.Description("最大显示条目数 (默认50)"),
@@ -39,7 +39,7 @@ func (s *CangJieDocServer) registerTools() {
 		mcp.WithString("category",
 			mcp.Required(),
 			mcp.Description("主分类"),
-			mcp.Enum("manual", "libs", "tools", "extra"),
+			mcp.Enum("manual", "libs", "tools", "extra", "ohos"),
 		),
 		mcp.WithString("subcategory",
 			mcp.Description("子分类，留空则列出整个分类"),
@@ -62,8 +62,8 @@ func (s *CangJieDocServer) registerTools() {
 			mcp.Description("搜索查询词。单个关键词或多关键词（空格分隔，AND匹配）"),
 		),
 		mcp.WithString("category",
-			mcp.Description("可选的分类过滤 (manual/libs/tools/extra)"),
-			mcp.Enum("manual", "libs", "tools", "extra"),
+			mcp.Description("可选的分类过滤 (manual/libs/tools/extra/ohos)"),
+			mcp.Enum("manual", "libs", "tools", "extra", "ohos"),
 		),
 		mcp.WithNumber("max_results",
 			mcp.Description("最大结果数 (默认10)"),
@@ -422,7 +422,7 @@ func (s *CangJieDocServer) generateOverview(category types.DocumentCategory, max
 	}
 
 	// 添加分类信息
-	categories := []types.DocumentCategory{types.CategoryManual, types.CategoryLibs, types.CategoryTools, types.CategoryExtra}
+	categories := []types.DocumentCategory{types.CategoryManual, types.CategoryLibs, types.CategoryTools, types.CategoryExtra, types.CategoryOhos}
 	for _, cat := range categories {
 		if category != "" && cat != category {
 			continue

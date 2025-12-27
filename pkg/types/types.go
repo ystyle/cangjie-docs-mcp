@@ -10,6 +10,7 @@ const (
 	CategoryLibs   DocumentCategory = "libs"   // 标准库API
 	CategoryTools  DocumentCategory = "tools"  // 开发工具
 	CategoryExtra  DocumentCategory = "extra"  // 额外内容
+	CategoryOhos   DocumentCategory = "ohos"   // OpenHarmony
 )
 
 // Document 文档结构
