@@ -366,28 +366,22 @@ func (s *Scanner) splitDocumentIfNeeded(doc *types.Document) []*types.Document {
 }
 
 // parseDocumentTOC 解析文档目录结构
+// 使用两阶段解析：第一阶段收集标题层级关系，第二阶段构建包含子章节内容的完整章节
 func (s *Scanner) parseDocumentTOC(content, docID string) *types.DocumentTOC {
 	lines := strings.Split(content, "\n")
-	toc := &types.DocumentTOC{
-		DocID:    docID,
-		Sections: []types.DocumentSection{},
+
+	// 第一阶段：解析所有标题及其位置、层级
+	type headingInfo struct {
+		level  int
+		line   int
+		title  string
+		parent int // 父章节在headings切片中的索引
 	}
 
-	var currentSection *types.DocumentSection
-	var sectionContent strings.Builder
+	var headings []headingInfo
 
 	for i, line := range lines {
-		// 检查是否是标题行
 		if strings.HasPrefix(line, "#") {
-			// 保存上一个章节
-			if currentSection != nil {
-				currentSection.Content = sectionContent.String()
-				currentSection.CharCount = len(currentSection.Content)
-				toc.Sections = append(toc.Sections, *currentSection)
-				toc.TotalSize += currentSection.CharCount
-			}
-
-			// 解析新章节
 			level := 0
 			for _, ch := range line {
 				if ch == '#' {
@@ -398,31 +392,76 @@ func (s *Scanner) parseDocumentTOC(content, docID string) *types.DocumentTOC {
 			}
 
 			title := strings.TrimSpace(line[level:])
-			sectionID := fmt.Sprintf("%s_section_%d", docID, len(toc.Sections)+1)
-
-			currentSection = &types.DocumentSection{
-				ID:         sectionID,
-				Title:      title,
-				Level:      level,
-				LineNumber: i + 1,
-			}
-
-			sectionContent = strings.Builder{}
-		} else if currentSection != nil {
-			// 添加内容到当前章节
-			if sectionContent.Len() > 0 {
-				sectionContent.WriteString("\n")
-			}
-			sectionContent.WriteString(line)
+			headings = append(headings, headingInfo{
+				level:  level,
+				line:   i,
+				title:  title,
+				parent: -1,
+			})
 		}
 	}
 
-	// 保存最后一个章节
-	if currentSection != nil {
-		currentSection.Content = sectionContent.String()
-		currentSection.CharCount = len(currentSection.Content)
-		toc.Sections = append(toc.Sections, *currentSection)
-		toc.TotalSize += currentSection.CharCount
+	// 第二阶段：建立父子关系
+	for i := range headings {
+		// 查找最近的低级标题作为父标题
+		for j := i - 1; j >= 0; j-- {
+			if headings[j].level < headings[i].level {
+				headings[i].parent = j
+				break
+			}
+		}
+	}
+
+	// 第三阶段：构建章节，每个章节包含所有子章节的内容
+	toc := &types.DocumentTOC{
+		DocID:    docID,
+		Sections: []types.DocumentSection{},
+	}
+
+	for i, heading := range headings {
+		// 确定这个章节内容的结束位置
+		endLine := len(lines)
+		if heading.level == 1 { // # 标题，包含整个文档
+			endLine = len(lines)
+		} else {
+			// 查找下一个同级或更高级的标题
+			for j := i + 1; j < len(headings); j++ {
+				if headings[j].level <= heading.level {
+					endLine = headings[j].line
+					break
+				}
+			}
+		}
+
+		// 提取章节内容（从标题行到结束位置）
+		var content strings.Builder
+		for j := heading.line; j < endLine; j++ {
+			if content.Len() > 0 {
+				content.WriteString("\n")
+			}
+			content.WriteString(lines[j])
+		}
+
+		sectionContent := content.String()
+
+		sectionID := fmt.Sprintf("%s_section_%d", docID, i)
+		section := types.DocumentSection{
+			ID:         sectionID,
+			ParentID:   "",
+			Title:      heading.title,
+			Level:      heading.level,
+			Content:    sectionContent,
+			CharCount:  len(sectionContent),
+			LineNumber: heading.line + 1,
+		}
+
+		// 设置父章节ID
+		if heading.parent >= 0 {
+			section.ParentID = fmt.Sprintf("%s_section_%d", docID, heading.parent)
+		}
+
+		toc.Sections = append(toc.Sections, section)
+		toc.TotalSize += section.CharCount
 	}
 
 	// 提取文档标题（第一个一级标题）
@@ -446,38 +485,40 @@ func (s *Scanner) splitLargeSection(doc *types.Document, section types.DocumentS
 	subSectionIndex := 0
 
 	for _, line := range lines {
-		// 查找三级标题(###)及以下的子章节
-		if strings.HasPrefix(line, "###") {
+		// 查找比当前章节级别更深的子章节（例如：当前是##，找###）
+		isSubHeading := false
+		lineLevel := 0
+		if strings.HasPrefix(line, "#") {
+			for _, ch := range line {
+				if ch == '#' {
+					lineLevel++
+				} else {
+					break
+				}
+			}
+			isSubHeading = lineLevel > section.Level
+		}
+
+		if isSubHeading {
 			// 保存上一个子章节
 			if currentSubSection != nil && subContent.Len() > 0 {
 				currentSubSection.Content = subContent.String()
 				currentSubSection.CharCount = len(currentSubSection.Content)
 
-				// 如果子章节仍然太大，跳过它（避免无限递归）
-				if currentSubSection.CharCount < types.MaxSectionSize*2 {
-					subDoc := s.createSubSectionDocument(doc, section, *currentSubSection, sectionIndex, subSectionIndex)
-					subDocs = append(subDocs, subDoc)
-					subSectionIndex++
-				}
+				// 创建子文档（移除大小限制，因为API文档可能很长）
+				subDoc := s.createSubSectionDocument(doc, section, *currentSubSection, sectionIndex, subSectionIndex)
+				subDocs = append(subDocs, subDoc)
+				subSectionIndex++
 			}
 
 			// 创建新的子章节
-			level := 0
-			for _, ch := range line {
-				if ch == '#' {
-					level++
-				} else {
-					break
-				}
-			}
-
-			title := strings.TrimSpace(line[level:])
+			title := strings.TrimSpace(line[lineLevel:])
 			subSectionID := fmt.Sprintf("%s_sub_%d_%d", doc.ID, sectionIndex, subSectionIndex)
 
 			currentSubSection = &types.DocumentSection{
 				ID:    subSectionID,
 				Title: title,
-				Level: level,
+				Level: lineLevel,
 			}
 
 			subContent = strings.Builder{}
@@ -494,10 +535,8 @@ func (s *Scanner) splitLargeSection(doc *types.Document, section types.DocumentS
 		currentSubSection.Content = subContent.String()
 		currentSubSection.CharCount = len(currentSubSection.Content)
 
-		if currentSubSection.CharCount < types.MaxSectionSize*2 {
-			subDoc := s.createSubSectionDocument(doc, section, *currentSubSection, sectionIndex, subSectionIndex)
-			subDocs = append(subDocs, subDoc)
-		}
+		subDoc := s.createSubSectionDocument(doc, section, *currentSubSection, sectionIndex, subSectionIndex)
+		subDocs = append(subDocs, subDoc)
 	}
 
 	// 如果没有找到合适的子章节，返回包含整个章节的单个文档
