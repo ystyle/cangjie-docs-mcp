@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -30,6 +31,9 @@ func (s *CangJieDocServer) registerTools() {
 		mcp.WithNumber("max_items",
 			mcp.Description("最大显示条目数 (默认50)"),
 		),
+		mcp.WithNumber("level",
+			mcp.Description("树形显示深度 (仅navigation/tree视图，默认3，0表示全部)"),
+		),
 	)
 	s.server.AddTool(overviewTool, s.handleGetDocumentOverview)
 
@@ -50,6 +54,9 @@ func (s *CangJieDocServer) registerTools() {
 		),
 		mcp.WithBoolean("include_preview",
 			mcp.Description("是否包含内容预览 (默认false)"),
+		),
+		mcp.WithNumber("max_items",
+			mcp.Description("最大返回数量 (默认100)"),
 		),
 	)
 	s.server.AddTool(listTool, s.handleListDocuments)
@@ -184,27 +191,34 @@ func (s *CangJieDocServer) handleGetDocumentOverview(ctx context.Context, reques
 		maxItems = int(mi)
 	}
 
-	// 根据视图类型生成不同的响应
-	var response interface{}
+	level := 3 // 默认显示3层
+	if l, ok := request.GetArguments()["level"].(float64); ok {
+		level = int(l)
+	}
 
+	// 根据视图类型生成不同的响应
 	switch viewType {
 	case "map":
 		// 生成文档地图
-		response = s.generateDocumentMap(category, maxItems)
+		response := s.generateDocumentMap(category, maxItems)
+		data, err := json.MarshalIndent(response, "", "  ")
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("failed to marshal response: %v", err)), nil
+		}
+		return mcp.NewToolResultText(string(data)), nil
 	case "navigation", "tree":
-		// 生成导航树
-		response = s.generateNavigationTree(category, maxItems)
+		// 生成导航树（文本格式）
+		treeText := s.generateNavigationTreeText(category, maxItems, level)
+		return mcp.NewToolResultText(treeText), nil
 	default: // overview
 		// 生成总览
-		response = s.generateOverview(category, maxItems)
+		response := s.generateOverview(category, maxItems)
+		data, err := json.MarshalIndent(response, "", "  ")
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("failed to marshal response: %v", err)), nil
+		}
+		return mcp.NewToolResultText(string(data)), nil
 	}
-
-	data, err := json.MarshalIndent(response, "", "  ")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("failed to marshal response: %v", err)), nil
-	}
-
-	return mcp.NewToolResultText(string(data)), nil
 }
 
 // handleListDocuments 处理文档列表请求
@@ -231,6 +245,11 @@ func (s *CangJieDocServer) handleListDocuments(ctx context.Context, request mcp.
 		includePreview = ip
 	}
 
+	maxItems := 0
+	if mi, ok := request.GetArguments()["max_items"].(float64); ok {
+		maxItems = int(mi)
+	}
+
 	// 筛选文档
 	var documents []*types.Document
 	for _, doc := range s.documents {
@@ -245,50 +264,67 @@ func (s *CangJieDocServer) handleListDocuments(ctx context.Context, request mcp.
 	s.sortDocuments(documents, sortBy)
 
 	// 限制结果数量
-	if len(documents) > 100 {
-		documents = documents[:100]
+	maxDocs := 100
+	if maxItems > 0 {
+		maxDocs = maxItems
+	}
+	if len(documents) > maxDocs {
+		documents = documents[:maxDocs]
 	}
 
-	// 格式化结果
-	var formattedDocs []map[string]interface{}
+	// 生成 Markdown 表格格式
+	var builder strings.Builder
+
+	// 标题
+	title := fmt.Sprintf("📋 %s", types.CategoryNames[types.DocumentCategory(category)])
+	if subcategory != "" {
+		title += fmt.Sprintf(" / %s", subcategory)
+	}
+	title += fmt.Sprintf(" (%d docs)", len(documents))
+	builder.WriteString(title + "\n\n")
+
+	// 表头
+	if includePreview {
+		builder.WriteString("| ID | 标题 | 难度 | 描述 | 预览 |\n")
+		builder.WriteString("|---|---|---|---|---|\n")
+	} else {
+		builder.WriteString("| ID | 标题 | 难度 | 描述 |\n")
+		builder.WriteString("|---|---|---|---|\n")
+	}
+
+	// 表格内容
 	for _, doc := range documents {
-		docInfo := map[string]interface{}{
-			"id":           doc.ID,
-			"title":        doc.Title,
-			"subcategory":  doc.Subcategory,
-			"description":  doc.Description,
-			"difficulty":   doc.Difficulty,
-			"keywords":     doc.Keywords,
-			"relative_path": doc.RelativePath,
-			"last_modified": doc.LastModified.Format("2006-01-02 15:04:05"),
+		// 截断描述
+		description := doc.Description
+		if len(description) > 50 {
+			description = description[:47] + "..."
 		}
+
+		id := doc.ID
+		title := doc.Title
+		difficulty := doc.Difficulty
 
 		if includePreview {
-			// 包含内容预览（前200字符）
+			// 包含内容预览
 			preview := doc.Content
-			if len(preview) > 200 {
-				preview = preview[:200] + "..."
+			if len(preview) > 80 {
+				preview = preview[:77] + "..."
 			}
-			docInfo["content_preview"] = preview
+			// 转义管道符
+			preview = strings.ReplaceAll(preview, "|", "\\|")
+			builder.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s |\n",
+				id, title, difficulty, description, preview))
+		} else {
+			builder.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n",
+				id, title, difficulty, description))
 		}
-
-		formattedDocs = append(formattedDocs, docInfo)
 	}
 
-	response := map[string]interface{}{
-		"category":     category,
-		"subcategory":  subcategory,
-		"sort_by":      sortBy,
-		"count":        len(formattedDocs),
-		"documents":    formattedDocs,
-	}
+	// 添加排序和分页信息
+	builder.WriteString(fmt.Sprintf("\n📊 排序方式: %s | 显示: %d/%d\n",
+		sortBy, len(documents), maxDocs))
 
-	data, err := json.MarshalIndent(response, "", "  ")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("failed to marshal response: %v", err)), nil
-	}
-
-	return mcp.NewToolResultText(string(data)), nil
+	return mcp.NewToolResultText(builder.String()), nil
 }
 
 // handleGetDocumentContent 处理获取文档内容
@@ -496,6 +532,7 @@ func (s *CangJieDocServer) generateNavigationTree(category types.DocumentCategor
 		Type        string      `json:"type"` // category/subcategory/document
 		ID          string      `json:"id,omitempty"`
 		Description string      `json:"description,omitempty"`
+		Count       int         `json:"count,omitempty"` // 子节点数量
 		Children    []TreeNode  `json:"children,omitempty"`
 	}
 
@@ -503,10 +540,28 @@ func (s *CangJieDocServer) generateNavigationTree(category types.DocumentCategor
 
 	// 构建树结构
 	treeMap := make(map[string]*TreeNode)
-	categoryMap := make(map[string]*TreeNode)
+	subcatDocCounts := make(map[string]int) // 统计每个子分类的实际文档数
 
+	// 第一遍：统计每个子分类的文档数量
 	for _, doc := range s.documents {
 		if category != "" && doc.Category != category {
+			continue
+		}
+
+		catStr := string(doc.Category)
+		subcatKey := catStr + "/" + doc.Subcategory
+		subcatDocCounts[subcatKey]++
+	}
+
+	// 第二遍：构建树结构（只包含原始文档，不包含分割后的子文档）
+	for _, doc := range s.documents {
+		if category != "" && doc.Category != category {
+			continue
+		}
+
+		// 跳过分割后的文档：通过Prerequisites字段判断
+		// 分割后的文档的Prerequisites包含父文档ID
+		if len(doc.Prerequisites) > 0 {
 			continue
 		}
 
@@ -521,8 +576,6 @@ func (s *CangJieDocServer) generateNavigationTree(category types.DocumentCategor
 				Children: make([]TreeNode, 0),
 			}
 			treeMap[catStr] = catNode
-			categoryMap[catStr] = catNode
-			roots = append(roots, *catNode)
 		}
 
 		// 创建子分类节点（如果不存在）
@@ -532,28 +585,97 @@ func (s *CangJieDocServer) generateNavigationTree(category types.DocumentCategor
 				Name:     doc.Subcategory,
 				Type:     "subcategory",
 				ID:       subcatKey,
+				Count:    subcatDocCounts[subcatKey], // 实际文档总数
 				Children: make([]TreeNode, 0),
 			}
 			treeMap[subcatKey] = subcatNode
-			categoryMap[catStr].Children = append(categoryMap[catStr].Children, *subcatNode)
+			treeMap[catStr].Children = append(treeMap[catStr].Children, *subcatNode)
 		}
 
-		// 添加文档节点（限制数量）
-		if len(treeMap[subcatKey].Children) < maxItems/10 {
+		// 添加文档节点（按目录结构组织）
+		// 使用RelativePath作为树结构
+		pathParts := strings.Split(doc.RelativePath, string(filepath.Separator))
+		if len(pathParts) > 2 {
+			// 例如: libs/std/core/core_package_api/core_package_structs.md
+			// 构建: std → core → core_package_api → core_package_structs.md
+			currentLevel := treeMap[catStr]
+
+			// 遍历路径中的目录（除了最后一层的文件名）
+			for i := 2; i < len(pathParts)-1; i++ {
+				dirName := pathParts[i]
+				dirKey := strings.Join(pathParts[:i+1], "/")
+
+				// 查找或创建目录节点
+				var dirNode *TreeNode
+				found := false
+				for j, child := range currentLevel.Children {
+					if child.Name == dirName && child.Type == "directory" {
+						dirNode = &currentLevel.Children[j]
+						found = true
+						break
+					}
+				}
+
+				if !found {
+					dirNode = &TreeNode{
+						Name:     dirName,
+						Type:     "directory",
+						ID:       dirKey,
+						Children: make([]TreeNode, 0),
+					}
+					currentLevel.Children = append(currentLevel.Children, *dirNode)
+				}
+
+				currentLevel = dirNode
+			}
+
+			// 添加文档节点
 			docNode := TreeNode{
 				Name:        doc.Title,
 				Type:        "document",
 				ID:          doc.ID,
 				Description: doc.Description,
 			}
-			treeMap[subcatKey].Children = append(treeMap[subcatKey].Children, docNode)
+			currentLevel.Children = append(currentLevel.Children, docNode)
 		}
+	}
+
+	// 从treeMap重新构建roots（递归复制，确保包含所有children）
+	roots = make([]TreeNode, 0)
+	for _, catStr := range []string{string(category)} {
+		if catNode, exists := treeMap[catStr]; exists {
+			// 递归复制节点及其children
+			rootCopy := *catNode
+			rootCopy.Children = make([]TreeNode, len(catNode.Children))
+			copy(rootCopy.Children, catNode.Children)
+
+			// 递归复制每个子分类的children
+			for i, subcat := range rootCopy.Children {
+				subcatKey := catStr + "/" + subcat.Name
+				if subcatNode, exists := treeMap[subcatKey]; exists {
+					subcatCopy := *subcatNode
+					subcatCopy.Children = make([]TreeNode, len(subcatNode.Children))
+					copy(subcatCopy.Children, subcatNode.Children)
+					rootCopy.Children[i] = subcatCopy
+				}
+			}
+
+			roots = append(roots, rootCopy)
+		}
+	}
+
+	// 计算实际显示的节点数
+	totalNodes := 0
+	for _, node := range treeMap {
+		totalNodes++
+		totalNodes += len(node.Children)
 	}
 
 	return map[string]interface{}{
 		"tree_type":    "navigation",
 		"roots":        roots,
-		"total_nodes":  len(treeMap),
+		"total_nodes":  totalNodes,
+		"total_docs":   len(s.documents),
 		"generated_at": time.Now().Format("2006-01-02 15:04:05"),
 	}
 }
@@ -635,4 +757,191 @@ func (s *CangJieDocServer) extractSection(content, section string) string {
 	}
 
 	return strings.Join(sectionLines, "\n")
+}
+
+// generateNavigationTreeText 生成导航树的文本格式（节省 tokens）
+func (s *CangJieDocServer) generateNavigationTreeText(category types.DocumentCategory, maxItems int, level int) string {
+	type TreeNode struct {
+		Name        string
+		Type        string
+		ID          string
+		Description string
+		Count       int
+		Children    []*TreeNode
+	}
+
+	// 使用指针的树结构
+	treeMap := make(map[string]*TreeNode)
+
+	// 辅助函数：创建或获取节点
+	getOrCreateNode := func(key string, name string, nodeType string) *TreeNode {
+		if node, exists := treeMap[key]; exists {
+			return node
+		}
+		newNode := &TreeNode{
+			Name:     name,
+			Type:     nodeType,
+			ID:       key,
+			Children: make([]*TreeNode, 0),
+		}
+		treeMap[key] = newNode
+		return newNode
+	}
+
+	// 统计子分类文档数量
+	subcatDocCounts := make(map[string]int)
+	for _, doc := range s.documents {
+		if category != "" && doc.Category != category {
+			continue
+		}
+		if len(doc.Prerequisites) > 0 {
+			continue
+		}
+		catStr := string(doc.Category)
+		subcatKey := catStr + "/" + doc.Subcategory
+		subcatDocCounts[subcatKey]++
+	}
+
+	// 遍历文档构建树
+	for _, doc := range s.documents {
+		if category != "" && doc.Category != category {
+			continue
+		}
+		if len(doc.Prerequisites) > 0 {
+			continue
+		}
+
+		catStr := string(doc.Category)
+		pathParts := strings.Split(doc.RelativePath, string(filepath.Separator))
+
+		if len(pathParts) <= 2 {
+			continue
+		}
+
+		// 创建或获取分类节点
+		catKey := catStr
+		catNode := getOrCreateNode(catKey, types.CategoryNames[doc.Category], "category")
+
+		// 创建或获取子分类节点
+		subcatKey := catStr + "/" + doc.Subcategory
+		subcatNode := getOrCreateNode(subcatKey, doc.Subcategory, "subcategory")
+		if subcatNode.Count == 0 {
+			subcatNode.Count = subcatDocCounts[subcatKey]
+		}
+
+		// 确保子分类是分类的子节点
+		found := false
+		for _, child := range catNode.Children {
+			if child == subcatNode {
+				found = true
+				break
+			}
+		}
+		if !found {
+			catNode.Children = append(catNode.Children, subcatNode)
+		}
+
+		// 构建目录路径（从子分类开始）
+		currentNode := subcatNode
+		for i := 2; i < len(pathParts)-1; i++ {
+			dirKey := strings.Join(pathParts[:i+1], "/")
+			dirName := pathParts[i]
+			dirNode := getOrCreateNode(dirKey, dirName, "directory")
+
+			// 确保目录是当前节点的子节点
+			found = false
+			for _, child := range currentNode.Children {
+				if child == dirNode {
+					found = true
+					break
+				}
+			}
+			if !found {
+				currentNode.Children = append(currentNode.Children, dirNode)
+			}
+
+			currentNode = dirNode
+		}
+
+		// 添加文档节点
+		docNode := &TreeNode{
+			Name:        doc.Title,
+			Type:        "document",
+			ID:          doc.ID,
+			Description: doc.Description,
+		}
+		currentNode.Children = append(currentNode.Children, docNode)
+	}
+
+	// 生成树形文本
+	var builder strings.Builder
+
+	totalDocs := 0
+	for _, doc := range s.documents {
+		if category == "" || doc.Category == category {
+			totalDocs++
+		}
+	}
+
+	builder.WriteString(fmt.Sprintf("📚 %s (%d docs)\n\n", types.CategoryNames[category], totalDocs))
+
+	// 递归生成树形文本
+	var printTree func([]*TreeNode, string, int)
+	printTree = func(nodes []*TreeNode, prefix string, currentDepth int) {
+		if level > 0 && currentDepth > level {
+			return
+		}
+
+		for i, node := range nodes {
+			isLast := i == len(nodes)-1
+			var connector string
+			if isLast {
+				connector = "└── "
+			} else {
+				connector = "├── "
+			}
+
+			var nodeStr string
+			switch node.Type {
+			case "subcategory":
+				if node.Count > 0 {
+					nodeStr = fmt.Sprintf("%s (%d docs)", node.Name, node.Count)
+				} else {
+					nodeStr = node.Name
+				}
+			case "document":
+				if node.Description != "" {
+					desc := node.Description
+					if len(desc) > 60 {
+						desc = desc[:57] + "..."
+					}
+					nodeStr = fmt.Sprintf("%s - %s", node.Name, desc)
+				} else {
+					nodeStr = node.Name
+				}
+			default:
+				nodeStr = node.Name
+			}
+
+			builder.WriteString(prefix + connector + nodeStr + "\n")
+
+			if len(node.Children) > 0 {
+				var newPrefix string
+				if isLast {
+					newPrefix = prefix + "    "
+				} else {
+					newPrefix = prefix + "│   "
+				}
+				printTree(node.Children, newPrefix, currentDepth+1)
+			}
+		}
+	}
+
+	// 从分类节点开始输出
+	catKey := string(category)
+	if catNode, exists := treeMap[catKey]; exists {
+		printTree(catNode.Children, "", 1)
+	}
+
+	return builder.String()
 }
