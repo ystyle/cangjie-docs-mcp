@@ -278,6 +278,11 @@ type FnType = (Int64) -> Unit
 func display(a: Int64): Unit {
     println(a)
 }
+// 命名参数:
+func name(name!:string)
+
+// 命名参数还可以设置默认值
+func name(name!:String = "小王")
 ```
 
 ### ⚠️ 函数参数（重要）
@@ -374,6 +379,7 @@ enum RGBColor {
 ### match 表达式
 
 #### 基本语法
+⚠️ **case**：不需要{}括号
 
 ```cj
 match (待匹配值) {
@@ -649,7 +655,7 @@ class LexerTest {
 10. `Unit` 类型只支持赋值、判等、判不等操作
 11. Lambda 表达式可以立即调用：`{ => 123 }()`
 12. 插值字符串使用 `${}` 而非 `{}`
-
+13. `Duration` 和 `sleep` 在 `std.core` 里不需导入
 ---
 
 ## 快速参考
