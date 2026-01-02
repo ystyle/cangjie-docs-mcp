@@ -39,14 +39,14 @@ func (s *CangJieDocServer) registerTools() {
 
 	// 文档列表工具
 	listTool := mcp.NewTool("list_documents",
-		mcp.WithDescription("列出分类或子分类的文档"),
+		mcp.WithDescription("列出分类或子分类的文档（支持路径导航，类似 ls 命令）"),
 		mcp.WithString("category",
 			mcp.Required(),
 			mcp.Description("主分类"),
 			mcp.Enum("manual", "libs", "tools", "extra", "ohos"),
 		),
 		mcp.WithString("subcategory",
-			mcp.Description("子分类，留空则列出整个分类"),
+			mcp.Description("子分类路径（支持多级路径，如 'stdx' 或 'stdx/crypto'），留空显示子分类列表"),
 		),
 		mcp.WithString("sort_by",
 			mcp.Description("排序方式 (默认title)"),
@@ -250,12 +250,132 @@ func (s *CangJieDocServer) handleListDocuments(ctx context.Context, request mcp.
 		maxItems = int(mi)
 	}
 
+	// 解析路径
+	pathParts := []string{}
+	if subcategory != "" {
+		pathParts = strings.Split(subcategory, "/")
+	}
+
+	var builder strings.Builder
+
+	// 根据路径深度显示不同内容
+	if len(pathParts) == 0 {
+		// 深度0：显示子分类列表
+		return s.listSubcategories(category, builder)
+	} else if len(pathParts) == 1 {
+		// 深度1：显示该子分类下的一级目录
+		return s.listDirectories(category, pathParts[0], builder)
+	} else {
+		// 深度2+：显示文档列表
+		return s.listDocumentsAtPath(category, subcategory, pathParts, sortBy, includePreview, maxItems, builder)
+	}
+}
+
+// listSubcategories 列出子分类
+func (s *CangJieDocServer) listSubcategories(category string, builder strings.Builder) (*mcp.CallToolResult, error) {
+	// 统计每个子分类的文档数
+	subcatCounts := make(map[string]int)
+	for _, doc := range s.documents {
+		if string(doc.Category) == category && len(doc.Prerequisites) == 0 {
+			subcatCounts[doc.Subcategory]++
+		}
+	}
+
+	// 排序子分类
+	var subcats []string
+	for subcat := range subcatCounts {
+		subcats = append(subcats, subcat)
+	}
+	sort.Strings(subcats)
+
+	// 标题
+	builder.WriteString(fmt.Sprintf("📋 %s\n\n", types.CategoryNames[types.DocumentCategory(category)]))
+	builder.WriteString("| 子分类 | 文档数 |\n")
+	builder.WriteString("|---|---|\n")
+
+	for _, subcat := range subcats {
+		builder.WriteString(fmt.Sprintf("| %s | %d |\n", subcat, subcatCounts[subcat]))
+	}
+
+	totalDocs := len(subcatCounts)
+	builder.WriteString(fmt.Sprintf("\n📊 共 %d 个子分类 | 总计 %d 个原始文档\n",
+		totalDocs, countTotalDocs(s, category, "")))
+
+	return mcp.NewToolResultText(builder.String()), nil
+}
+
+// listDirectories 列出子分类下的一级目录
+func (s *CangJieDocServer) listDirectories(category, subcategory string, builder strings.Builder) (*mcp.CallToolResult, error) {
+	// 统计目录下的文档数
+	dirCounts := make(map[string]int)
+	dirPathMap := make(map[string]string) // 目录名 -> 完整路径前缀
+
+	for _, doc := range s.documents {
+		if string(doc.Category) == category && doc.Subcategory == subcategory && len(doc.Prerequisites) == 0 {
+			// 解析路径，获取第一级目录
+			pathParts := strings.Split(doc.RelativePath, string(filepath.Separator))
+			if len(pathParts) > 2 {
+				// 跳过子分类本身，获取下一级目录
+				dirName := pathParts[2] // 例如 libs/stdx/crypto -> crypto
+				dirCounts[dirName]++
+				dirPathMap[dirName] = dirName
+			}
+		}
+	}
+
+	// 排序目录
+	var dirs []string
+	for dir := range dirCounts {
+		dirs = append(dirs, dir)
+	}
+	sort.Strings(dirs)
+
+	// 标题
+	builder.WriteString(fmt.Sprintf("📋 %s / %s\n\n", types.CategoryNames[types.DocumentCategory(category)], subcategory))
+	builder.WriteString("| 目录 | 文档数 |\n")
+	builder.WriteString("|---|---|\n")
+
+	for _, dir := range dirs {
+		builder.WriteString(fmt.Sprintf("| %s | %d |\n", dir, dirCounts[dir]))
+	}
+
+	totalDirs := len(dirs)
+	builder.WriteString(fmt.Sprintf("\n📊 共 %d 个目录 | 使用 '%s/%s/目录名' 深入查看\n",
+		totalDirs, category, subcategory))
+
+	return mcp.NewToolResultText(builder.String()), nil
+}
+
+// listDocumentsAtPath 列出指定路径下的文档
+func (s *CangJieDocServer) listDocumentsAtPath(category, subcategory string, pathParts []string,
+	sortBy string, includePreview bool, maxItems int, builder strings.Builder) (*mcp.CallToolResult, error) {
+
 	// 筛选文档
 	var documents []*types.Document
 	for _, doc := range s.documents {
-		if string(doc.Category) == category {
-			if subcategory == "" || doc.Subcategory == subcategory {
-				documents = append(documents, doc)
+		if string(doc.Category) == category && len(doc.Prerequisites) == 0 {
+			// 首先检查子分类是否匹配
+			if len(pathParts) > 0 && doc.Subcategory != pathParts[0] {
+				continue
+			}
+
+			// 检查路径前缀是否匹配
+			docPathParts := strings.Split(doc.RelativePath, string(filepath.Separator))
+			if len(docPathParts) >= len(pathParts)+2 {
+				// 检查路径是否匹配（跳过子分类部分）
+				match := true
+				for i, part := range pathParts {
+					// docPathParts: [libs, stdx, crypto, xxx.md]
+					// pathParts: [stdx, crypto]
+					// 需要检查 docPathParts[i+1] == pathParts[i]
+					if i+1 >= len(docPathParts) || docPathParts[i+1] != part {
+						match = false
+						break
+					}
+				}
+				if match {
+					documents = append(documents, doc)
+				}
 			}
 		}
 	}
@@ -272,14 +392,9 @@ func (s *CangJieDocServer) handleListDocuments(ctx context.Context, request mcp.
 		documents = documents[:maxDocs]
 	}
 
-	// 生成 Markdown 表格格式
-	var builder strings.Builder
-
 	// 标题
 	title := fmt.Sprintf("📋 %s", types.CategoryNames[types.DocumentCategory(category)])
-	if subcategory != "" {
-		title += fmt.Sprintf(" / %s", subcategory)
-	}
+	title += fmt.Sprintf(" / %s", subcategory)
 	title += fmt.Sprintf(" (%d docs)", len(documents))
 	builder.WriteString(title + "\n\n")
 
@@ -320,11 +435,26 @@ func (s *CangJieDocServer) handleListDocuments(ctx context.Context, request mcp.
 		}
 	}
 
-	// 添加排序和分页信息
+	// 添加统计信息
 	builder.WriteString(fmt.Sprintf("\n📊 排序方式: %s | 显示: %d/%d\n",
 		sortBy, len(documents), maxDocs))
 
 	return mcp.NewToolResultText(builder.String()), nil
+}
+
+// countTotalDocs 统计总文档数
+func countTotalDocs(server *CangJieDocServer, category, subcategory string) int {
+	count := 0
+	for _, doc := range server.documents {
+		if string(doc.Category) == category {
+			if subcategory == "" || doc.Subcategory == subcategory {
+				if len(doc.Prerequisites) == 0 {
+					count++
+				}
+			}
+		}
+	}
+	return count
 }
 
 // handleGetDocumentContent 处理获取文档内容
