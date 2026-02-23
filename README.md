@@ -34,7 +34,25 @@
 }
 ```
 
-### 第三步：重启Claude Code
+### 第三步：安装 Skill（推荐）
+
+安装 Skill 后，Claude 可以更智能地检索仓颉文档，支持多种搜索模式：
+
+```bash
+# GitHub（推荐）
+npx skills add ystyle/cangjie-docs-mcp
+
+# 国内用户（AtomGit 镜像）
+npx skills add https://atomgit.com/Cangjie-SIG/cangjie-docs-mcp
+```
+
+Skill 支持 4 种搜索模式：
+- ⚡ **直接搜索**：精确 API 查询（如 "String.split"）
+- 🧠 **PageIndex 智能检索**：模糊查询（如 "怎么截取字符串"）
+- ⚖️ **混合模式**：自动切换最优策略
+- 🧭 **探索模式**：学习引导
+
+### 第四步：重启 Claude Code
 
 重启后即可使用！系统会自动：
 - ✅ 下载仓颉文档到默认位置
