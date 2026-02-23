@@ -1,288 +1,218 @@
-# 仓颉语言文档检索系统 - 技术文档
+# 仓颉语言文档检索系统 - 技术设计文档
 
 ## 系统架构
 
 ### 整体设计
 
 ```
-用户 (Claude Code) → MCP协议 → 仓颉文档MCP服务器 → 本地文档系统
-                     ↓
-              stdio通信协议
-                     ↓
+用户 (Claude Code) → MCP协议 → 仓颉文档MCP服务器 → 本地文档系统↓
+              stdio通信协议↓
               文档检索引擎
 ```
+
+### 核心组件
+
+| 组件 | 职责 |
+|------|------|
+| 文档扫描器 | 自动扫描和解析文档，支持大文档分割 |
+| 搜索引擎 | 三级搜索算法实现，支持中文分词 |
+| MCP服务器 | 协议处理和工具接口暴露 |
+| 索引系统 | 倒排索引和元数据管理 |
+| Skill 扩展 | 智能检索助手 |
 
 ### 文档源
 
 - **官方文档仓库**: https://gitcode.com/Cangjie/CangjieCorpus
-- **文档版本**: 仓颉编程语言 v1.0.0 (发布日期: 2025-07-01)
 - **文档格式**: Markdown
-- **文档结构**: manual/ (基础手册), libs/ (标准库), tools/ (工具), extra/ (额外内容)
+- **自动更新**: 每次启动时检测并拉取最新文档
 
-### 核心组件
+## 文档分类体系
 
-1. **文档扫描器 (Scanner)** - 自动扫描和解析文档
-2. **搜索引擎 (Search)** - 三级搜索算法实现
-3. **MCP服务器** - 协议处理和接口暴露
-4. **索引系统** - 倒排索引和元数据管理
+### 五大分类
 
-## 数据结构
+| 分类 | 内容 | 说明 |
+|------|------|------|
+| manual | 基础手册 | 语法、类型系统、函数、类等基础教程 |
+| libs | 标准库API | std 标准库和 stdx 扩展库 |
+| tools | 开发工具 | cjpm、编译器、调试器等 |
+| extra | 额外内容 | 高级主题、最佳实践 |
+| ohos | OpenHarmony | 鸿蒙平台开发文档 |
 
-### 文档分类
+### 层级结构
 
-```go
-type DocumentCategory string
-
-const (
-    CategoryManual DocumentCategory = "manual" // 基础手册
-    CategoryLibs   DocumentCategory = "libs"   // 标准库API
-    CategoryTools  DocumentCategory = "tools"  // 开发工具
-    CategoryExtra  DocumentCategory = "extra"  // 额外内容
-)
+```
+分类 → 子分类→ 目录 → 文档
 ```
 
-### 文档元数据
+支持类似文件系统的渐进式浏览。
 
-```go
-type Document struct {
-    ID            string           `json:"id"`
-    Title         string           `json:"title"`
-    Category      DocumentCategory `json:"category"`
-    Subcategory   string           `json:"subcategory"`
-    Description   string           `json:"description"`
-    FilePath      string           `json:"file_path"`
-    Keywords      []string         `json:"keywords"`
-    Content       string           `json:"content"`
-    // ... 其他字段
-}
-```
+## MCP 工具设计
 
-## 搜索算法
+### 工具清单
+
+| 工具 | 用途 | 典型场景 |
+|------|------|----------|
+| cangjie_docs_overview | 文档总览 | 了解文档结构、统计信息 |
+| cangjie_list_docs | 列出文档 | 浏览特定分类/目录下的文档 |
+| cangjie_search | 搜索文档 | 关键词查找相关文档 |
+| cangjie_get_doc | 获取文档 | 读取文档完整内容 |
+
+### 设计原则
+
+1. **渐进式披露**: 从概览到详情，逐层深入
+2. **Token 高效**: 优先返回摘要，按需获取详情
+3. **灵活过滤**: 支持分类、路径、相关性等多维度筛选
+
+### cangjie_docs_overview
+
+获取文档全局视图，支持三种输出格式：
+
+| 视图 | 格式 | 适用场景 |
+|------|------|----------|
+| overview | JSON | 分类统计、数量概览 |
+| map | JSON | 文档层级关系 |
+| navigation/tree | 文本树 | 节省 Token 的导航浏览 |
+
+### cangjie_list_docs
+
+渐进式文档浏览，行为随路径深度变化：
+
+| 深度 | 行为 | 示例 |
+|------|------|------|
+| 0 | 显示子分类列表 | libs → std, stdx |
+| 1 | 显示一级目录 | libs/std → core, collection |
+| 2+ | 显示文档列表 | libs/std/core → 具体文档 |
+
+### cangjie_search
+
+多关键词 AND 匹配搜索：
+
+- 单个关键词：直接匹配
+- 多个关键词（空格分隔）：所有关键词都必须出现
+- 支持分类过滤和相关性阈值
+
+### cangjie_get_doc
+
+获取文档内容，支持：
+
+- 多种输出格式：Markdown / JSON / 纯文本
+- 章节提取：只获取特定章节内容
+- 元数据控制：是否包含文档属性
+
+## 搜索算法设计
 
 ### 三级搜索策略
 
-1. **精确关键词匹配** (权重: 10.0)
-   - 匹配文档关键词标签
-   - 完全匹配时直接返回
+| 级别 | 匹配方式 | 权重 | 说明 |
+|------|----------|------|------|
+| 1 | 精确匹配 | 10.0 | 标题/描述/关键词完全包含查询词 |
+| 2 | 索引匹配 | 8.0/6.0 | 通过倒排索引快速定位 |
+| 3 | 模糊匹配 | 3.0 | 内容全文搜索 |
 
-2. **标题描述匹配** (权重: 8.0/6.0)
-   - 在标题和描述中搜索
-   - 部分匹配和同义词处理
+### 相关性评分因素
 
-3. **内容模糊匹配** (权重: 3.0)
-   - 在文档内容中搜索
-   - 使用简单文本匹配
+- 标题匹配度
+- 描述匹配度
+- 关键词命中
+- 文件名相关性
+- 内容出现频率
 
-### 相关性评分
+### 中文支持
 
-```go
-func calculateRelevance(query, document string) float64 {
-    score := 0.0
+- 使用正则提取中英文词汇
+- 停用词过滤（的、了、在、是、the、a 等）
+- 大小写不敏感
 
-    // 关键词匹配 (最高权重)
-    for _, keyword := range document.Keywords {
-        if strings.Contains(strings.ToLower(query), strings.ToLower(keyword)) {
-            score += ExactMatchWeight
-        }
-    }
+## 文档分割机制
 
-    // 标题匹配
-    if strings.Contains(strings.ToLower(document.Title), strings.ToLower(query)) {
-        score += TitleMatchWeight
-    }
+### 设计目标
 
-    // 描述匹配
-    if strings.Contains(strings.ToLower(document.Description), strings.ToLower(query)) {
-        score += DescriptionWeight
-    }
+大文档会影响 AI处理效率和搜索精度，需要自动分割。
 
-    return score
-}
-```
+### 分割策略
 
-## MCP接口实现
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| 触发阈值 | 15KB | 超过此大小触发分割 |
+| 分割粒度 | 二级标题 (##) | 按章节分割 |
+| 递归分割 | 否 | 保持结构体/类的完整性 |
 
-### Resources
+### 关联保留
 
-| URI模板 | 功能 | 返回类型 |
-|---------|------|----------|
-| `cangjie://map` | 完整文档分类结构 | JSON |
-| `cangjie://navigation/{category}` | 分类目录树 | JSON |
-| `cangjie://navigation/all` | 完整导航树 | JSON |
-| `cangjie://category/{category}` | 分类文档列表 | JSON |
-| `cangjie://document/{doc_id}` | 文档完整内容 | Markdown |
+分割后的子文档通过元数据关联父文档，支持追溯完整上下文。
 
-### Tools
+### 实际效果
 
-| 工具名 | 功能 | 参数 |
-|--------|------|------|
-| `search_documents` | 搜索文档 | query, category, max_results, min_confidence |
-| `suggest_documents` | 智能建议 | context, suggestion_type, max_suggestions |
-| `get_document_content` | 获取文档 | doc_id, include_metadata |
+- 92.3% 的文档大小在 0-5KB 范围
+- 搜索结果直接定位到相关章节
+- 大幅降低 AI 处理压力
 
-## 性能优化
+## Token 优化策略
 
-### 索引构建
+### 输出格式选择
 
-```go
-// 倒排索引结构
-type SearchEngine struct {
-    documents    map[string]*types.Document
-    keywordIndex map[string][]string // 关键词到文档ID的映射
-}
-```
+| 格式 | 使用场景 | Token 节省 |
+|------|----------|-----------|
+| 文本树形 | 导航浏览 | ~75% |
+| Markdown 表格 | 文档列表 | ~60% |
+| JSON | 结构化数据 | 基准 |
 
-### 缓存策略
+### 设计原则
 
-- **文档内容缓存**: 避免重复文件读取
-- **搜索结果缓存**: 缓存常用查询结果
-- **索引预构建**: 启动时构建完整索引
+1. **默认简洁**: 列表操作默认只返回摘要
+2. **按需详情**: 通过参数控制是否包含完整内容
+3. **格式优先**: 优先选择 Token 效率高的输出格式
 
-### 内存优化
+## Skill 扩展
 
-- **延迟加载**: 大文档内容按需加载
-- **索引压缩**: 使用压缩算法减少内存占用
-- **垃圾回收**: 及时释放不需要的资源
+### cangjie-docs-navigator
 
-## 配置系统
+智能文档检索 Skill，提供 4 种搜索模式：
 
-### 零配置设计
+| 模式 | 触发条件 | 策略 |
+|------|----------|------|
+| 直接搜索 | 精确 API 名称 | 调用搜索工具 |
+| PageIndex 智能检索 | 模糊功能描述 | 目录树导航 |
+| 混合模式 | 不确定查询精确度 | 先搜索后导航 |
+| 探索模式 | 开放性问题 | 展示文档体系引导 |
 
-```go
-// 默认文档根目录 - 可执行文件所在目录的CangjieCorpus
-var DefaultDocumentRootPath = func() string {
-    if exe, err := os.Executable(); err == nil {
-        exeDir := filepath.Dir(exe)
-        return filepath.Join(exeDir, "CangjieCorpus")
-    }
-    return "./CangjieCorpus" // fallback
-}()
-```
+### 安装方式
 
-### 命令行参数
+- GitHub: `npx skills add ystyle/cangjie-docs-mcp`
+- 国内镜像: `npx skills add https://atomgit.com/Cangjie-SIG/cangjie-docs-mcp`
 
-```bash
-./cangje-docs-mcp [选项]
+## 配置设计
 
-选项:
-  -dir string    仓颉文档根目录路径
-  -version       显示版本信息
-  -help          显示帮助信息
-```
+### 零配置理念
 
-## 版本检测
+- 文档自动下载到默认位置
+- 每次启动自动更新
+- 无需手动配置索引
 
-### 自动版本提取
+### 可选参数
 
-```go
-func getDocumentVersion(docRoot string) string {
-    readmePath := filepath.Join(docRoot, "README.md")
-
-    // 匹配仓颉版本信息：仓颉编程语言 v1.0.0（对应官网文档发布日期：2025-07-01）
-    if strings.Contains(line, "仓颉编程语言") {
-        versionPattern := regexp.MustCompile(`仓颉编程语言\s+([vV]?\d+(?:\.\d+)*)`)
-        // 提取版本和日期信息
-    }
-}
-```
+| 参数 | 用途 |
+|------|------|
+| -dir | 自定义文档目录 |
+| -no-update | 禁用自动更新（离线模式） |
 
 ## 错误处理
 
 ### 错误类型
 
-1. **文档不存在** - 指定的文档ID无效
-2. **目录访问错误** - 无法访问文档目录
-3. **索引构建失败** - 文档解析错误
-4. **搜索超时** - 搜索操作超时
+- 文档不存在
+- 目录访问错误
+- 索引构建失败
+- 参数验证失败
 
-### 日志记录
+### 日志策略
 
-```go
-log.Printf("开始扫描文档目录: %s", docRoot)
-log.Printf("文档扫描完成，共发现 %d 个文档", len(documents))
-log.Printf("服务器已启动，已加载 %d 个文档", len(s.documents))
-```
+关键操作记录日志，便于问题排查。
 
-## 扩展性
+## 性能目标
 
-### 插件化设计
-
-- **搜索算法插件**: 可插拔的搜索策略
-- **文档解析器**: 支持多种文档格式
-- **建议引擎**: 可配置的建议算法
-
-### 多语言支持
-
-- **国际化框架**: 支持多语言界面
-- **本地化搜索**: 支持多语言内容搜索
-- **文化适配**: 考虑不同语言的文化差异
-
-## 安全考虑
-
-### 输入验证
-
-- **参数检查**: 验证所有输入参数
-- **路径遍历防护**: 防止目录遍历攻击
-- **内容过滤**: 过滤恶意内容
-
-### 权限控制
-
-- **文件访问权限**: 限制文件系统访问范围
-- **资源限制**: 限制内存和CPU使用
-- **请求频率限制**: 防止滥用
-
-## 测试策略
-
-### 单元测试
-
-```go
-func TestSearchEngine(t *testing.T) {
-    engine := NewSearchEngine()
-    // 测试搜索功能
-}
-
-func TestDocumentScanner(t *testing.T) {
-    scanner := NewScanner("/test/path")
-    // 测试文档扫描
-}
-```
-
-### 集成测试
-
-- **MCP协议测试**: 验证MCP接口正确性
-- **端到端测试**: 完整流程测试
-- **性能测试**: 响应时间和并发测试
-
-### 测试覆盖率
-
-- **代码覆盖率**: 目标 > 90%
-- **分支覆盖率**: 目标 > 85%
-- **功能覆盖率**: 所有核心功能
-
-## 部署和维护
-
-### 部署方式
-
-1. **二进制部署**: 直接运行编译后的可执行文件
-2. **容器化部署**: 使用Docker容器部署
-3. **服务化部署**: 作为系统服务运行
-
-### 监控指标
-
-- **性能指标**: 响应时间、吞吐量
-- **业务指标**: 搜索成功率、用户满意度
-- **系统指标**: CPU、内存、磁盘使用
-
-### 维护流程
-
-```bash
-# 更新文档
-1. 更新CangjieCorpus目录内容
-2. 重启MCP服务器
-3. 验证功能正常
-
-# 版本升级
-1. 备份当前版本
-2. 部署新版本
-3. 验证兼容性
-```
+| 指标 | 目标值 |
+|------|--------|
+| 搜索响应 | <200ms |
+| 索引构建 | 启动时一次性完成 |
+| Token 效率 | 文本格式节省 60-75% |
