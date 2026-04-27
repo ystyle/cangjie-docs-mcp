@@ -622,12 +622,7 @@ func (s *CangJieDocServer) handleListVersions(ctx context.Context, request mcp.C
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("获取版本列表失败: %v", err)), nil
 	}
-	if len(versions) == 0 {
-		return mcp.NewToolResultText(`{
-  "versions": [],
-  "message": "未发现可用版本，请检查网络连接后重试"
-}`), nil
-	}
+
 	for i, v := range versions {
 		wtDir := utils.GetVersionDocDir(s.docRoot, v.Name)
 		if _, err := os.Stat(wtDir); err == nil {
@@ -636,15 +631,29 @@ func (s *CangJieDocServer) handleListVersions(ctx context.Context, request mcp.C
 			versions[i].Status = string(types.WorktreePending)
 		}
 	}
-	response := map[string]interface{}{
-		"versions": versions,
-		"total":    len(versions),
+
+	var builder strings.Builder
+	builder.WriteString("📋 可用文档版本\n\n")
+	builder.WriteString("| 版本 | latest | default | 状态 |\n")
+	builder.WriteString("|---|---|---|---|\n")
+	for _, v := range versions {
+		latest := ""
+		if v.IsLatest {
+			latest = "✅"
+		}
+		def := ""
+		if v.IsDefault {
+			def = "✅"
+		}
+		status := "⏳ 待加载"
+		if v.Status == string(types.WorktreeReady) {
+			status = "✅ 已就绪"
+		}
+		builder.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", v.Name, latest, def, status))
 	}
-	data, err := json.MarshalIndent(response, "", "  ")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("序列化响应失败: %v", err)), nil
-	}
-	return mcp.NewToolResultText(string(data)), nil
+	builder.WriteString(fmt.Sprintf("\n📊 共 %d 个版本", len(versions)))
+
+	return mcp.NewToolResultText(builder.String()), nil
 }
 
 // 辅助函数
