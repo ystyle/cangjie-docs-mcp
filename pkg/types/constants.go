@@ -3,6 +3,7 @@ package types
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 )
 
 // 默认文档根目录 - 可执行文件所在目录的CangjieCorpus
@@ -39,6 +40,12 @@ const (
 	// 是否启用文档分割
 	EnableDocumentSplitting = true
 )
+
+// 版本分支正则（排除 OpenHarmony 等非标准分支）
+var VersionBranchPattern = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
+
+// Worktree 目录名前缀
+const WorktreeDirPrefix = "CangjieCorpus-"
 
 // 分类映射
 var CategoryNames = map[DocumentCategory]string{

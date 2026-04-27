@@ -125,3 +125,20 @@ type DocumentTOC struct {
 	TotalSize int                `json:"total_size"` // 总字符数
 	IsSplit   bool               `json:"is_split"`   // 是否已分割
 }
+
+// VersionBranch 版本分支信息
+type VersionBranch struct {
+	Name      string `json:"name"`      // 分支名，如 "1.1.0"
+	IsLatest  bool   `json:"is_latest"`  // 是否是最高 semver
+	IsDefault bool   `json:"is_default"` // 是否是 origin/HEAD
+	Status    string `json:"status"`     // worktree 状态：pending / ready
+}
+
+// WorktreeStatus worktree 状态
+type WorktreeStatus string
+
+const (
+	WorktreePending WorktreeStatus = "pending" // 尚未创建
+	WorktreeReady   WorktreeStatus = "ready"   // 已就绪
+	WorktreeFailed  WorktreeStatus = "failed"  // 创建失败
+)
