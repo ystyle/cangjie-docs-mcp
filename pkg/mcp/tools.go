@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"cangje-docs-mcp/pkg/types"
+	"cangje-docs-mcp/pkg/utils"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -100,6 +102,12 @@ func (s *CangJieDocServer) registerTools() {
 		),
 	)
 	s.server.AddTool(contentTool, s.handleGetDocumentContent)
+
+	// 版本列表工具
+	listVersionsTool := mcp.NewTool("cangjie_list_versions",
+		mcp.WithDescription("列出仓颉文档的可用版本分支（仅标准 semver 版本，不含 OpenHarmony 等特殊分支），自动识别 latest 和 default"),
+	)
+	s.server.AddTool(listVersionsTool, s.handleListVersions)
 }
 
 // handleSearchDocuments 处理文档搜索
@@ -572,6 +580,37 @@ func (s *CangJieDocServer) handleGetDocumentContent(ctx context.Context, request
 		}
 		return mcp.NewToolResultText(content), nil
 	}
+}
+
+// handleListVersions 处理版本列表请求
+func (s *CangJieDocServer) handleListVersions(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	versions, err := utils.ListVersionBranches(s.docRoot)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("获取版本列表失败: %v", err)), nil
+	}
+	if len(versions) == 0 {
+		return mcp.NewToolResultText(`{
+  "versions": [],
+  "message": "未发现可用版本，请检查网络连接后重试"
+}`), nil
+	}
+	for i, v := range versions {
+		wtDir := utils.GetVersionDocDir(s.docRoot, v.Name)
+		if _, err := os.Stat(wtDir); err == nil {
+			versions[i].Status = string(types.WorktreeReady)
+		} else {
+			versions[i].Status = string(types.WorktreePending)
+		}
+	}
+	response := map[string]interface{}{
+		"versions": versions,
+		"total":    len(versions),
+	}
+	data, err := json.MarshalIndent(response, "", "  ")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("序列化响应失败: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(data)), nil
 }
 
 // 辅助函数
