@@ -30,6 +30,9 @@ func (s *CangJieDocServer) registerTools() {
 			mcp.Description("指定分类 (manual/libs/tools/extra/ohos)"),
 			mcp.Enum("manual", "libs", "tools", "extra", "ohos"),
 		),
+		mcp.WithString("version",
+			mcp.Description("文档版本号（如 1.1.0），不传则使用默认版本"),
+		),
 		mcp.WithNumber("max_items",
 			mcp.Description("最大显示条目数 (默认50)"),
 		),
@@ -46,6 +49,9 @@ func (s *CangJieDocServer) registerTools() {
 			mcp.Required(),
 			mcp.Description("主分类"),
 			mcp.Enum("manual", "libs", "tools", "extra", "ohos"),
+		),
+		mcp.WithString("version",
+			mcp.Description("文档版本号（如 1.1.0），不传则使用默认版本"),
 		),
 		mcp.WithString("subcategory",
 			mcp.Description("子分类路径（支持多级路径，如 'stdx' 或 'stdx/crypto'），留空显示子分类列表"),
@@ -74,6 +80,9 @@ func (s *CangJieDocServer) registerTools() {
 			mcp.Description("可选的分类过滤 (manual/libs/tools/extra/ohos)"),
 			mcp.Enum("manual", "libs", "tools", "extra", "ohos"),
 		),
+		mcp.WithString("version",
+			mcp.Description("文档版本号（如 1.1.0），不传则使用默认版本"),
+		),
 		mcp.WithNumber("max_results",
 			mcp.Description("最大结果数 (默认10)"),
 		),
@@ -89,6 +98,9 @@ func (s *CangJieDocServer) registerTools() {
 		mcp.WithString("doc_id",
 			mcp.Required(),
 			mcp.Description("文档ID"),
+		),
+		mcp.WithString("version",
+			mcp.Description("文档版本号（如 1.1.0），不传则使用默认版本"),
 		),
 		mcp.WithBoolean("include_metadata",
 			mcp.Description("是否包含元数据 (默认true)"),
@@ -112,13 +124,20 @@ func (s *CangJieDocServer) registerTools() {
 
 // handleSearchDocuments 处理文档搜索
 func (s *CangJieDocServer) handleSearchDocuments(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	// 使用新的API获取参数
 	query, err := request.RequireString("query")
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	// 可选参数
+	version := ""
+	if v, ok := request.GetArguments()["version"].(string); ok && v != "" {
+		version = v
+	}
+
+	if _, err := s.ensureVersionDocs(version); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("加载版本 %s 文档失败: %v", version, err)), nil
+	}
+
 	var category types.DocumentCategory
 	if cat, ok := request.GetArguments()["category"].(string); ok && cat != "" {
 		category = types.DocumentCategory(cat)
@@ -134,18 +153,23 @@ func (s *CangJieDocServer) handleSearchDocuments(ctx context.Context, request mc
 		minConfidence = mc
 	}
 
-	// 构建搜索请求
 	searchReq := types.SearchRequest{
-		Query:        query,
-		MaxResults:   maxResults,
+		Query:         query,
+		MaxResults:    maxResults,
 		MinConfidence: minConfidence,
-		Category:     category,
+		Category:      category,
 	}
 
-	// 执行搜索
-	results := s.searchEngine.Search(searchReq)
+	se := s.getSearchEngineForVersion(version)
+	if se == nil {
+		if version != "" && version != s.defaultVersion {
+			return mcp.NewToolResultError(fmt.Sprintf("版本 %s 的搜索引擎未就绪", version)), nil
+		}
+		se = s.searchEngine
+	}
 
-	// 格式化结果
+	results := se.Search(searchReq)
+
 	var formattedResults []map[string]interface{}
 	for _, result := range results {
 		formattedResults = append(formattedResults, map[string]interface{}{
@@ -159,7 +183,7 @@ func (s *CangJieDocServer) handleSearchDocuments(ctx context.Context, request mc
 				"keywords":     result.Document.Keywords,
 				"relative_path": result.Document.RelativePath,
 			},
-			"score":     result.Score,
+			"score":      result.Score,
 			"match_type": result.MatchType,
 			"match_text": result.MatchText,
 		})
@@ -181,14 +205,22 @@ func (s *CangJieDocServer) handleSearchDocuments(ctx context.Context, request mc
 
 // handleGetDocumentOverview 处理文档总览请求
 func (s *CangJieDocServer) handleGetDocumentOverview(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	// 获取必填参数
+	version := ""
+	if v, ok := request.GetArguments()["version"].(string); ok && v != "" {
+		version = v
+	}
+
+	docs, err := s.ensureVersionDocs(version)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("加载版本 %s 文档失败: %v", version, err)), nil
+	}
+
 	categoryStr, err := request.RequireString("category")
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	category := types.DocumentCategory(categoryStr)
 
-	// 获取可选参数
 	viewType := "overview"
 	if vt, ok := request.GetArguments()["view_type"].(string); ok && vt != "" {
 		viewType = vt
@@ -199,28 +231,24 @@ func (s *CangJieDocServer) handleGetDocumentOverview(ctx context.Context, reques
 		maxItems = int(mi)
 	}
 
-	level := 3 // 默认显示3层
+	level := 3
 	if l, ok := request.GetArguments()["level"].(float64); ok {
 		level = int(l)
 	}
 
-	// 根据视图类型生成不同的响应
 	switch viewType {
 	case "map":
-		// 生成文档地图
-		response := s.generateDocumentMap(category, maxItems)
+		response := s.generateDocumentMap(category, maxItems, docs)
 		data, err := json.MarshalIndent(response, "", "  ")
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("failed to marshal response: %v", err)), nil
 		}
 		return mcp.NewToolResultText(string(data)), nil
 	case "navigation", "tree":
-		// 生成导航树（文本格式）
-		treeText := s.generateNavigationTreeText(category, maxItems, level)
+		treeText := s.generateNavigationTreeText(category, maxItems, level, docs)
 		return mcp.NewToolResultText(treeText), nil
-	default: // overview
-		// 生成总览
-		response := s.generateOverview(category, maxItems)
+	default:
+		response := s.generateOverview(category, maxItems, docs)
 		data, err := json.MarshalIndent(response, "", "  ")
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("failed to marshal response: %v", err)), nil
@@ -231,13 +259,21 @@ func (s *CangJieDocServer) handleGetDocumentOverview(ctx context.Context, reques
 
 // handleListDocuments 处理文档列表请求
 func (s *CangJieDocServer) handleListDocuments(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	// 获取必需参数
+	version := ""
+	if v, ok := request.GetArguments()["version"].(string); ok && v != "" {
+		version = v
+	}
+
+	docs, err := s.ensureVersionDocs(version)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("加载版本 %s 文档失败: %v", version, err)), nil
+	}
+
 	category, err := request.RequireString("category")
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	// 获取可选参数
 	subcategory := ""
 	if sub, ok := request.GetArguments()["subcategory"].(string); ok {
 		subcategory = sub
@@ -258,7 +294,6 @@ func (s *CangJieDocServer) handleListDocuments(ctx context.Context, request mcp.
 		maxItems = int(mi)
 	}
 
-	// 解析路径
 	pathParts := []string{}
 	if subcategory != "" {
 		pathParts = strings.Split(subcategory, "/")
@@ -266,24 +301,19 @@ func (s *CangJieDocServer) handleListDocuments(ctx context.Context, request mcp.
 
 	var builder strings.Builder
 
-	// 根据路径深度显示不同内容
 	if len(pathParts) == 0 {
-		// 深度0：显示子分类列表
-		return s.listSubcategories(category, builder)
+		return s.listSubcategories(category, docs, builder)
 	} else if len(pathParts) == 1 {
-		// 深度1：显示该子分类下的一级目录
-		return s.listDirectories(category, pathParts[0], builder)
+		return s.listDirectories(category, pathParts[0], docs, builder)
 	} else {
-		// 深度2+：显示文档列表
-		return s.listDocumentsAtPath(category, subcategory, pathParts, sortBy, includePreview, maxItems, builder)
+		return s.listDocumentsAtPath(category, subcategory, pathParts, sortBy, includePreview, maxItems, docs, builder)
 	}
 }
 
 // listSubcategories 列出子分类
-func (s *CangJieDocServer) listSubcategories(category string, builder strings.Builder) (*mcp.CallToolResult, error) {
-	// 统计每个子分类的文档数
+func (s *CangJieDocServer) listSubcategories(category string, docs map[string]*types.Document, builder strings.Builder) (*mcp.CallToolResult, error) {
 	subcatCounts := make(map[string]int)
-	for _, doc := range s.documents {
+	for _, doc := range docs {
 		if string(doc.Category) == category {
 			subcatCounts[doc.Subcategory]++
 		}
@@ -307,18 +337,17 @@ func (s *CangJieDocServer) listSubcategories(category string, builder strings.Bu
 
 	totalDocs := len(subcatCounts)
 	builder.WriteString(fmt.Sprintf("\n📊 共 %d 个子分类 | 总计 %d 个原始文档\n",
-		totalDocs, countTotalDocs(s, category, "")))
+		totalDocs, countTotalDocs(docs, category, "")))
 
 	return mcp.NewToolResultText(builder.String()), nil
 }
 
 // listDirectories 列出子分类下的一级目录
-func (s *CangJieDocServer) listDirectories(category, subcategory string, builder strings.Builder) (*mcp.CallToolResult, error) {
-	// 统计目录下的文档数
+func (s *CangJieDocServer) listDirectories(category, subcategory string, docs map[string]*types.Document, builder strings.Builder) (*mcp.CallToolResult, error) {
 	dirCounts := make(map[string]int)
-	dirPathMap := make(map[string]string) // 目录名 -> 完整路径前缀
+	dirPathMap := make(map[string]string)
 
-	for _, doc := range s.documents {
+	for _, doc := range docs {
 		if string(doc.Category) == category && doc.Subcategory == subcategory && len(doc.Prerequisites) == 0 {
 			// 解析路径，获取第一级目录
 			pathParts := strings.Split(doc.RelativePath, string(filepath.Separator))
@@ -356,11 +385,10 @@ func (s *CangJieDocServer) listDirectories(category, subcategory string, builder
 
 // listDocumentsAtPath 列出指定路径下的文档
 func (s *CangJieDocServer) listDocumentsAtPath(category, subcategory string, pathParts []string,
-	sortBy string, includePreview bool, maxItems int, builder strings.Builder) (*mcp.CallToolResult, error) {
+	sortBy string, includePreview bool, maxItems int, docs map[string]*types.Document, builder strings.Builder) (*mcp.CallToolResult, error) {
 
-	// 筛选文档
-	var documents []*types.Document
-	for _, doc := range s.documents {
+	documents := []*types.Document{}
+	for _, doc := range docs {
 		if string(doc.Category) == category {
 			// 首先检查子分类是否匹配（使用完整的 subcategory 字符串）
 			if subcategory != "" && doc.Subcategory != subcategory {
@@ -451,9 +479,9 @@ func (s *CangJieDocServer) listDocumentsAtPath(category, subcategory string, pat
 }
 
 // countTotalDocs 统计总文档数
-func countTotalDocs(server *CangJieDocServer, category, subcategory string) int {
+func countTotalDocs(docs map[string]*types.Document, category, subcategory string) int {
 	count := 0
-	for _, doc := range server.documents {
+	for _, doc := range docs {
 		if string(doc.Category) == category {
 			if subcategory == "" || doc.Subcategory == subcategory {
 				if len(doc.Prerequisites) == 0 {
@@ -467,13 +495,21 @@ func countTotalDocs(server *CangJieDocServer, category, subcategory string) int 
 
 // handleGetDocumentContent 处理获取文档内容
 func (s *CangJieDocServer) handleGetDocumentContent(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	// 获取必需参数
 	docID, err := request.RequireString("doc_id")
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	// 获取可选参数
+	version := ""
+	if v, ok := request.GetArguments()["version"].(string); ok && v != "" {
+		version = v
+	}
+
+	docs, err := s.ensureVersionDocs(version)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("加载版本 %s 文档失败: %v", version, err)), nil
+	}
+
 	includeMetadata := true
 	if im, ok := request.GetArguments()["include_metadata"].(bool); ok {
 		includeMetadata = im
@@ -489,11 +525,9 @@ func (s *CangJieDocServer) handleGetDocumentContent(ctx context.Context, request
 		section = sec
 	}
 
-	// 查找文档（支持通过 ID 或 FullPathID 查找）
-	doc, exists := s.documents[docID]
+	doc, exists := docs[docID]
 	if !exists {
-		// 如果通过 ID 找不到，尝试通过 FullPathID 查找
-		for _, d := range s.documents {
+		for _, d := range docs {
 			if d.FullPathID == docID {
 				doc = d
 				exists = true
@@ -616,13 +650,12 @@ func (s *CangJieDocServer) handleListVersions(ctx context.Context, request mcp.C
 // 辅助函数
 
 // generateOverview 生成文档总览
-func (s *CangJieDocServer) generateOverview(category types.DocumentCategory, maxItems int) map[string]interface{} {
-	// 统计信息
-	totalDocs := len(s.documents)
+func (s *CangJieDocServer) generateOverview(category types.DocumentCategory, maxItems int, docs map[string]*types.Document) map[string]interface{} {
+	totalDocs := len(docs)
 	categoryStats := make(map[types.DocumentCategory]int)
 	subcategoryStats := make(map[string]map[string]int)
 
-	for _, doc := range s.documents {
+	for _, doc := range docs {
 		categoryStats[doc.Category]++
 		if subcategoryStats[string(doc.Category)] == nil {
 			subcategoryStats[string(doc.Category)] = make(map[string]int)
@@ -668,11 +701,10 @@ func (s *CangJieDocServer) generateOverview(category types.DocumentCategory, max
 }
 
 // generateDocumentMap 生成文档地图
-func (s *CangJieDocServer) generateDocumentMap(category types.DocumentCategory, maxItems int) map[string]interface{} {
-	// 构建分类->子分类->文档的层次结构
+func (s *CangJieDocServer) generateDocumentMap(category types.DocumentCategory, maxItems int, docs map[string]*types.Document) map[string]interface{} {
 	docMap := make(map[string]map[string][]map[string]interface{})
 
-	for _, doc := range s.documents {
+	for _, doc := range docs {
 		if category != "" && doc.Category != category {
 			continue
 		}
@@ -700,7 +732,7 @@ func (s *CangJieDocServer) generateDocumentMap(category types.DocumentCategory, 
 	return map[string]interface{}{
 		"map_type":     "document_hierarchy",
 		"categories":   docMap,
-		"total_docs":   len(s.documents),
+		"total_docs":   len(docs),
 		"generated_at": time.Now().Format("2006-01-02 15:04:05"),
 	}
 }
@@ -940,7 +972,7 @@ func (s *CangJieDocServer) extractSection(content, section string) string {
 }
 
 // generateNavigationTreeText 生成导航树的文本格式（节省 tokens）
-func (s *CangJieDocServer) generateNavigationTreeText(category types.DocumentCategory, maxItems int, level int) string {
+func (s *CangJieDocServer) generateNavigationTreeText(category types.DocumentCategory, maxItems int, level int, docs map[string]*types.Document) string {
 	type TreeNode struct {
 		Name        string
 		Type        string
@@ -970,7 +1002,7 @@ func (s *CangJieDocServer) generateNavigationTreeText(category types.DocumentCat
 
 	// 统计子分类文档数量
 	subcatDocCounts := make(map[string]int)
-	for _, doc := range s.documents {
+	for _, doc := range docs {
 		if category != "" && doc.Category != category {
 			continue
 		}
@@ -980,7 +1012,7 @@ func (s *CangJieDocServer) generateNavigationTreeText(category types.DocumentCat
 	}
 
 	// 遍历文档构建树
-	for _, doc := range s.documents {
+	for _, doc := range docs {
 		if category != "" && doc.Category != category {
 			continue
 		}
@@ -1051,7 +1083,7 @@ func (s *CangJieDocServer) generateNavigationTreeText(category types.DocumentCat
 	var builder strings.Builder
 
 	totalDocs := 0
-	for _, doc := range s.documents {
+	for _, doc := range docs {
 		if category == "" || doc.Category == category {
 			totalDocs++
 		}
