@@ -14,6 +14,7 @@ import (
 // Scanner 文档扫描器
 type Scanner struct {
 	docRoot string
+	version string // 文档版本号，空表示 default
 }
 
 // NewScanner 创建新的文档扫描器
@@ -327,6 +328,22 @@ func (s *Scanner) generateContentPreview(content string) string {
 	}
 
 	return preview
+}
+
+// NewVersionedScanner 创建指定版本的扫描器
+func NewVersionedScanner(docRoot, version string) *Scanner {
+	if docRoot == "" {
+		docRoot = types.DefaultDocumentRootPath
+	}
+	return &Scanner{
+		docRoot: docRoot,
+		version: version,
+	}
+}
+
+// GetVersion 获取版本号
+func (s *Scanner) GetVersion() string {
+	return s.version
 }
 
 // GetDocRoot 获取文档根目录
