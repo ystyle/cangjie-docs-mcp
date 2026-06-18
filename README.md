@@ -45,7 +45,7 @@
 npx skills add ystyle/cangjie-docs-mcp
 
 # 国内用户（AtomGit 镜像）
-npx skills add https://atomgit.com/Cangjie-SIG/cangjie-docs-mcp
+npx skills add https://atomgit.com/Cangjie-SIG/cangjie-docs-mcp.git
 ```
 
 Skill 支持 4 种搜索模式：
