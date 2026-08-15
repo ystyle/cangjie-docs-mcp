@@ -1,6 +1,6 @@
 ---
 name: cangjie-docs-navigator
-description: 仓颉语言文档智能检索助手。支持4种搜索模式（直接搜索、PageIndex智能检索、混合模式、探索学习）。当用户需要：(1) 查询仓颉语法（变量声明、函数定义、泛型等），(2) 查找标准库API（String、Array、HashMap等），(3) 了解仓颉特性或入门学习，(4) 任何涉及仓颉/cangjie/cj 的文档查询时使用。使用 cangjie_docs_overview、cangjie_list_docs、cangjie_search、cangjie_get_doc 四个MCP工具进行智能检索。
+description: 仓颉语言文档智能检索助手。支持4种搜索模式（直接搜索、PageIndex智能检索、混合模式、探索学习）和多版本文档查询。当用户需要：(1) 查询仓颉语法（变量声明、函数定义、泛型等），(2) 查找标准库API（String、Array、HashMap等），(3) 了解仓颉特性或入门学习，(4) 查询指定版本文档（如 1.0.0、1.1.0），(5) 任何涉及仓颉/cangjie/cj 的文档查询时使用。使用 cangjie_docs_overview、cangjie_list_docs、cangjie_search、cangjie_get_doc、cangjie_list_versions 五个MCP工具进行智能检索。
 ---
 
 # 仓颉文档智能检索助手
@@ -33,7 +33,7 @@ description: 仓颉语言文档智能检索助手。支持4种搜索模式（直
 ```
 1. 意图分析 → 判断分类：manual/libs/tools/ohos
 2. cangjie_docs_overview(category) → 获取目录树
-3. cangjie_list_docs(subcategory) → 列出文档
+3. cangjie_list_docs(category, subcategory) → 列出文档
 4. cangjie_get_doc(doc_id) → 获取内容
 ```
 
@@ -49,6 +49,28 @@ description: 仓颉语言文档智能检索助手。支持4种搜索模式（直
 
 **执行**：展示文档体系，引导用户选择方向
 
+## 多版本查询
+
+所有工具均支持 `version` 参数（如 `1.0.0`、`1.1.0`），不传则使用默认（最新）版本。
+
+1. 先用 `cangjie_list_versions()` 查看可用版本（输出会标注 latest/default）
+2. 查询指定版本文档：`cangjie_search(query, version="1.0.0")`、`cangjie_get_doc(doc_id, version="1.1.0")`
+3. 触发场景：用户明确提到版本号（"1.0.0 的 X"）、对比不同版本差异
+
+**注意**：不同版本的文档 ID 可能不同，切换版本后先用 overview/list_docs 定位该版本下的文档 ID。
+
+## 工具速查
+
+| 工具 | 用途 | 关键参数 |
+|------|------|---------|
+| `cangjie_list_versions` | 列出可用文档版本（semver 过滤，标注 latest/default） | 无 |
+| `cangjie_docs_overview` | 获取文档总览（导航树/文档地图/分类统计） | `category`(必填)、`view_type`、`level`、`max_items` |
+| `cangjie_list_docs` | 列出文档（路径渐进） | `category`(必填)、`subcategory`、`max_items`、`sort_by` |
+| `cangjie_search` | 关键词搜索（空格分隔 AND 匹配） | `query`(必填)、`category`、`max_results`、`min_confidence` |
+| `cangjie_get_doc` | 获取文档内容 | `doc_id`(必填)、`section`、`format`、`include_metadata` |
+
+> 所有工具都支持 `version` 参数。
+
 ## 文档分类
 
 | 分类 | 内容 | 触发关键词 |
@@ -63,11 +85,12 @@ description: 仓颉语言文档智能检索助手。支持4种搜索模式（直
 **直接搜索**：包含具体名称（String、HashMap、.split）
 **PageIndex**：功能描述（怎么、如何）、对比问题（区别）
 **探索模式**：开放问题（什么、哪些、入门）
+**版本查询**：包含版本号（1.0.0、1.1.0、最新版、旧版）
 
 ## 执行策略
 
 ```
-优先级：API名称 → 模式1 | 功能描述 → 模式2 | 开放问题 → 模式4 | 其他 → 模式3
+优先级：版本号 → 模式2并带version参数 | API名称 → 模式1 | 功能描述 → 模式2 | 开放问题 → 模式4 | 其他 → 模式3
 失败降级：模式1失败 → 模式2 → 模式4
 ```
 
