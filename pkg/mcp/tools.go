@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -117,7 +116,9 @@ func (s *CangJieDocServer) registerTools() {
 
 	// 版本列表工具
 	listVersionsTool := mcp.NewTool("cangjie_list_versions",
-		mcp.WithDescription("列出仓颉文档的可用版本分支（仅标准 semver 版本，不含 OpenHarmony 等特殊分支），自动识别 latest 和 default"),
+		mcp.WithDescription("列出仓颉文档的可用版本分支（仅标准 semver 版本，不含 OpenHarmony 等特殊分支），自动识别 latest 和 default。"+
+			"若返回内容包含\"语料库需要重建\"提示，说明本地文档库是浅克隆或单分支克隆；"+
+			"此时应先向用户说明并询问是否重建，用户同意后再请其执行 cangje-docs-mcp -repair-docs，不要自行执行。"),
 	)
 	s.server.AddTool(listVersionsTool, s.handleListVersions)
 }
@@ -624,8 +625,10 @@ func (s *CangJieDocServer) handleListVersions(ctx context.Context, request mcp.C
 	}
 
 	for i, v := range versions {
-		wtDir := utils.GetVersionDocDir(s.docRoot, v.Name)
-		if _, err := os.Stat(wtDir); err == nil {
+		// 就绪判据必须与文档实际可见性一致，即以内存是否已加载为准。
+		// 只看 worktree 目录是否存在会误报：目录已建但本进程未加载时，
+		// 会显示"已就绪"而实际查询拿不到文档。
+		if s.isVersionLoaded(v.Name) {
 			versions[i].Status = string(types.WorktreeReady)
 		} else {
 			versions[i].Status = string(types.WorktreePending)
@@ -652,6 +655,23 @@ func (s *CangJieDocServer) handleListVersions(ctx context.Context, request mcp.C
 		builder.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", v.Name, latest, def, status))
 	}
 	builder.WriteString(fmt.Sprintf("\n📊 共 %d 个版本", len(versions)))
+
+	// 仓库健康检查：若语料库是浅克隆或单分支，提示 agent 征询用户后执行完整重建。
+	// 注意：这里只输出建议，绝不自动执行——重建会下载约 300MB 且不可回退。
+	health := utils.CheckRepoHealth(s.docRoot)
+	if health.NeedsRepair {
+		builder.WriteString("\n\n---\n\n")
+		builder.WriteString("⚠️ **语料库需要重建**\n\n")
+		builder.WriteString(fmt.Sprintf("- 检测结果：%s\n", health.HealthyDescription))
+		builder.WriteString(fmt.Sprintf("- 当前 refspec：`%s`\n", health.Refspec))
+		builder.WriteString("\n**给 agent 的处理指引**：\n\n")
+		builder.WriteString("1. 请先向用户说明上述情况，并**询问是否执行完整重建**；\n")
+		builder.WriteString("2. 不要自行执行重建（该操作会删除现有语料库并重新下载约 300MB，不可回退）；\n")
+		builder.WriteString("3. 用户确认后，请其执行下列任一方式：\n")
+		builder.WriteString("   - 命令行：`cangje-docs-mcp -repair-docs`\n")
+		builder.WriteString("   - 或手动删除 `~/.config/cangje-docs-mcp/CangjieCorpus*` 后重启本 MCP 服务\n")
+		builder.WriteString("4. 若用户选择\"不重建\"，当前版本通常仍可正常使用（浅克隆不影响单个分支的文档内容）。\n")
+	}
 
 	return mcp.NewToolResultText(builder.String()), nil
 }

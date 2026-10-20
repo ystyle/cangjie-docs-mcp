@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"cangje-docs-mcp/pkg/mcp"
+	"cangje-docs-mcp/pkg/types"
 	"cangje-docs-mcp/pkg/utils"
 )
 
@@ -19,14 +20,30 @@ func main() {
 	// 定义命令行参数
 	var docRoot = flag.String("dir", "", "仓颉文档根目录路径 (留空则使用默认位置)")
 	var noUpdate = flag.Bool("no-update", false, "禁用自动更新文档")
+	var repairDocs = flag.Bool("repair-docs", false, "完整重建语料库（删除现有目录后重新克隆，约 300MB）")
 	var showVersion = flag.Bool("version", false, "显示版本信息")
 	var showHelp = flag.Bool("help", false, "显示帮助信息")
 
 	flag.Parse()
 
+	// 完整重建语料库：破坏性操作，仅由用户显式触发
+	if *repairDocs {
+		docDir, err := utils.GetDocumentDir(*docRoot)
+		if err != nil {
+			log.Fatalf("获取文档目录失败: %v", err)
+		}
+		fmt.Printf("将完整重建语料库: %s\n", docDir)
+		fmt.Println("该操作会删除现有语料库并重新下载约 300MB 内容。")
+		if err := utils.RepairDocuments(docDir); err != nil {
+			log.Fatalf("重建语料库失败: %v", err)
+		}
+		fmt.Println("✓ 完成。可重新启动 MCP 服务使用最新语料库。")
+		return
+	}
+
 	// 显示版本信息
 	if *showVersion {
-		fmt.Println("仓颉语言文档检索系统 v1.0.0")
+		fmt.Printf("仓颉语言文档检索系统 %s\n", types.ServerVersion)
 		fmt.Println("基于MCP协议的本地文档检索服务器")
 		fmt.Println()
 
@@ -58,10 +75,15 @@ func main() {
 		fmt.Println()
 		fmt.Println("  启动时会自动更新文档（除非使用 -no-update 参数）")
 		fmt.Println()
+		fmt.Println("  语料库重建:")
+		fmt.Println("    若 cangjie_list_versions 提示语料库需要重建（浅克隆/单分支），")
+		fmt.Println("    可执行 cangje-docs-mcp -repair-docs 完整重建（会重新下载约 300MB）。")
+		fmt.Println()
 		fmt.Println("示例:")
 		fmt.Println("  cangje-docs-mcp                                    # 使用默认目录并自动更新")
 		fmt.Println("  cangje-docs-mcp -no-update                         # 使用默认目录但不更新")
 		fmt.Println("  cangje-docs-mcp -dir /path/to/docs                # 指定文档目录")
+		fmt.Println("  cangje-docs-mcp -repair-docs                       # 完整重建语料库")
 		return
 	}
 

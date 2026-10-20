@@ -35,7 +35,8 @@ jobs:
         echo "Building version: $version"
 
         # 设置构建标志
-        ldflags="-s -w -X main.version=$version"
+        # 注意：版本号注入到 pkg/types.ServerVersion（main.version 不存在，-X 会静默失效）
+        ldflags="-s -w -X cangje-docs-mcp/pkg/types.ServerVersion=$version"
 
         # 创建构建目录
         mkdir -p build

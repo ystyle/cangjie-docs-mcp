@@ -2,6 +2,11 @@ package types
 
 import "time"
 
+// ServerVersion 服务版本号。
+// 由 CI 通过 -ldflags "-X cangje-docs-mcp/pkg/types.ServerVersion=<tag>" 注入；
+// 本地构建未注入时显示 dev，避免开发构建被误认为正式发布版。
+var ServerVersion = "dev"
+
 // DocumentCategory 文档分类枚举
 type DocumentCategory string
 

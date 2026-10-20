@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
 
 	"cangje-docs-mcp/pkg/scanner"
 	"cangje-docs-mcp/pkg/search"
@@ -18,11 +19,16 @@ type CangJieDocServer struct {
 	server         *server.MCPServer
 	docRoot        string
 	defaultVersion string
-	documents      map[string]*types.Document              // default 版本文档
-	versionedDocs  map[string]map[string]*types.Document    // version → docs
+	documents      map[string]*types.Document            // default 版本文档
+	versionedDocs  map[string]map[string]*types.Document // version → docs
 	searchEngine   *search.SearchEngine
-	searchEngines  map[string]*search.SearchEngine          // version → search engine
+	searchEngines  map[string]*search.SearchEngine // version → search engine
 	scanner        *scanner.Scanner
+	// versionMu 保护 versionedDocs / searchEngines。
+	// MCP 工具调用由 worker 池并发执行（默认 5 个），无锁会导致 concurrent map writes 直接崩溃。
+	versionMu sync.RWMutex
+	// loadMu 串行化版本文档的首次加载，避免同一版本被并发 git worktree add 到同一路径。
+	loadMu sync.Mutex
 }
 
 // NewCangJieDocServer 创建新的仓颉文档服务器
@@ -32,7 +38,7 @@ func NewCangJieDocServer(docRoot string) *CangJieDocServer {
 	})))
 	mcpServer := server.NewMCPServer(
 		"仓颉语言文档检索系统",
-		"1.0.0",
+		types.ServerVersion,
 		server.WithToolCapabilities(true),
 	)
 	s := &CangJieDocServer{
@@ -86,10 +92,26 @@ func (s *CangJieDocServer) getDocsForVersion(version string) map[string]*types.D
 	if version == "" || version == s.defaultVersion {
 		return s.documents
 	}
+	s.versionMu.RLock()
+	defer s.versionMu.RUnlock()
 	if docs, ok := s.versionedDocs[version]; ok {
 		return docs
 	}
 	return nil
+}
+
+// isVersionLoaded 判断某版本的文档是否已加载到内存。
+//
+// 这是"就绪"的唯一判据：必须与 getDocsForVersion 的可见性一致。
+// 早期实现用 os.Stat(worktree 目录) 判断，worktree 已建好但本进程未加载时会误报未就绪。
+func (s *CangJieDocServer) isVersionLoaded(version string) bool {
+	if version == "" || version == s.defaultVersion {
+		return true
+	}
+	s.versionMu.RLock()
+	defer s.versionMu.RUnlock()
+	_, ok := s.versionedDocs[version]
+	return ok
 }
 
 // ensureVersionDocs 确保指定版本的文档已加载
@@ -97,7 +119,14 @@ func (s *CangJieDocServer) ensureVersionDocs(version string) (map[string]*types.
 	if version == "" || version == s.defaultVersion {
 		return s.documents, nil
 	}
-	if docs, ok := s.versionedDocs[version]; ok {
+	if docs := s.getDocsForVersion(version); docs != nil {
+		return docs, nil
+	}
+	// 串行化加载，避免并发对同一版本重复 git worktree add / 扫描
+	s.loadMu.Lock()
+	defer s.loadMu.Unlock()
+	// 加锁后二次检查，可能已被其他 goroutine 加载完毕
+	if docs := s.getDocsForVersion(version); docs != nil {
 		return docs, nil
 	}
 	versionDocDir, err := utils.EnsureWorktree(s.docRoot, version)
@@ -109,10 +138,12 @@ func (s *CangJieDocServer) ensureVersionDocs(version string) (map[string]*types.
 	if err != nil {
 		return nil, fmt.Errorf("扫描版本 %s 文档失败: %w", version, err)
 	}
-	s.versionedDocs[version] = docs
 	se := search.NewSearchEngine()
 	se.BuildIndex(docs)
+	s.versionMu.Lock()
+	s.versionedDocs[version] = docs
 	s.searchEngines[version] = se
+	s.versionMu.Unlock()
 	slog.Info("版本文档已加载", "version", version, "count", len(docs))
 	return docs, nil
 }
@@ -122,6 +153,8 @@ func (s *CangJieDocServer) getSearchEngineForVersion(version string) *search.Sea
 	if version == "" || version == s.defaultVersion {
 		return s.searchEngine
 	}
+	s.versionMu.RLock()
+	defer s.versionMu.RUnlock()
 	if se, ok := s.searchEngines[version]; ok {
 		return se
 	}
